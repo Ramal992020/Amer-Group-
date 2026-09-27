@@ -24,6 +24,8 @@ import {
   UserCheck,
   PhoneCall,
   Users,
+  Loader2,
+  ArrowLeftRight,
 } from 'lucide-react';
 import {
   HEADS as DEFAULT_HEADS,
@@ -53,6 +55,15 @@ import type {
   VisitType,
 } from './lib/walkin';
 import { LoginScreen } from './components/LoginScreen';
+import { WorkspaceGate } from './components/WorkspaceGate';
+import {
+  useSupabaseAuth,
+  signOutFromSupabase,
+  getGoogleProfile,
+  getSavedWorkspace,
+  saveWorkspace,
+} from './lib/auth';
+import type { GoogleProfile, Workspace } from './lib/auth';
 import { SyncCard } from './components/SyncCard';
 import { BackupPanel } from './components/BackupPanel';
 import { saveAutomaticBackup } from './lib/backups';
@@ -86,7 +97,89 @@ interface DoneInfo {
 
 type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
 
-const AUTH_KEY = 'amer-walkin-auth';
+/** شاشة انتظار التحقق من الجلسة — لا يُعرض أي شيء من التطبيق قبل انتهائها. */
+function AuthSplash() {
+  return (
+    <div dir="rtl" className="fixed inset-0 z-[999] grid place-items-center bg-ink-50">
+      <div aria-hidden className="pointer-events-none absolute inset-0 hero-mesh" />
+      <div className="relative flex flex-col items-center gap-4">
+        <div className="anim-fade-up rounded-2xl bg-white px-6 py-4 shadow-[0_10px_30px_-12px_rgba(20,23,31,0.18)] ring-1 ring-ink-100">
+          <AmerLogo className="w-[150px]" variant="dark" />
+        </div>
+        <div className="flex items-center gap-2 text-[12px] font-bold text-ink-400">
+          <Loader2 className="size-4 animate-spin text-brand-600" />
+          جارٍ التحقق من الجلسة مع Supabase…
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * جذر التطبيق — الحارس الوحيد للدخول:
+ *   loading     ← شاشة التحقق من الجلسة ضد Supabase
+ *   signed-out  ← شاشة Sign in with Google فقط (لا يوجد Mock/Guest/Auto Login)
+ *   signed-in   ← اختيار مساحة العمل (إن لزم) ثم التطبيق
+ */
+export default function App() {
+  const { status, user, verified } = useSupabaseAuth();
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [switching, setSwitching] = useState(false);
+
+  // استرجاع/تصفير مساحة العمل المفضلة تبعاً لحالة الجلسة القادمة من Supabase.
+  useEffect(() => {
+    if (status === 'signed-in' && user) {
+      setWorkspace(getSavedWorkspace(user.id));
+      setSwitching(false);
+    } else if (status === 'signed-out') {
+      setWorkspace(null);
+      setSwitching(false);
+    }
+  }, [status, user]);
+
+  useEffect(() => {
+    if (workspace) setActiveAccount(workspace);
+  }, [workspace]);
+
+  // 1) جارٍ التحقق من الجلسة مع Supabase — منع أي وميض للتطبيق أو شاشة الدخول.
+  if (status === 'loading') return <AuthSplash />;
+
+  // 2) لا توجد جلسة صالحة من Supabase → شاشة الدخول عبر Google فقط.
+  if (status === 'signed-out' || !user) return <LoginScreen />;
+
+  // 3) جلسة موثّقة بدون مساحة عمل محفوظة (أو المستخدم طلب تبديل الفرع).
+  const profile = getGoogleProfile(user);
+  if (!workspace || !profile || switching) {
+    return (
+      <WorkspaceGate
+        profile={
+          profile ?? { name: 'مستخدم Google', email: user.email ?? '', avatarUrl: null }
+        }
+        verified={verified}
+        onPick={(ws) => {
+          saveWorkspace(user.id, ws);
+          setWorkspace(ws);
+          setSwitching(false);
+        }}
+        onLogout={() => void signOutFromSupabase()}
+        onCancel={switching ? () => setSwitching(false) : undefined}
+      />
+    );
+  }
+
+  // 4) الدخول للتطبيق — جلسة Supabase ناجحة + مساحة عمل محددة.
+  return (
+    <ToastProvider>
+      <WalkInApp
+        key={workspace}
+        account={workspace}
+        profile={profile}
+        onLogout={() => void signOutFromSupabase()}
+        onSwitchWorkspace={() => setSwitching(true)}
+      />
+    </ToastProvider>
+  );
+}
 
 const NAV: { id: Tab; label: string; icon: typeof CalendarCheck }[] = [
   { id: 'dashboard', label: 'الرئيسية', icon: LayoutDashboard },
@@ -104,52 +197,17 @@ const TITLES: Record<Tab, { title: string; sub: string }> = {
   manage: { title: 'الهيكل', sub: 'إدارة الفرق والمزامنة بين الأجهزة' },
 };
 
-export default function App() {
-  const [account, setAccount] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(AUTH_KEY);
-    } catch {
-      return null;
-    }
-  });
-
-  if (!account) {
-    return (
-      <LoginScreen
-        onLogin={(user) => {
-          try {
-            localStorage.setItem(AUTH_KEY, user);
-          } catch {
-            /* ignore */
-          }
-          setActiveAccount(user);
-          setAccount(user);
-        }}
-      />
-    );
-  }
-
-  setActiveAccount(account);
-
-  return (
-    <ToastProvider>
-      <WalkInApp
-        key={account}
-        account={account}
-        onLogout={() => {
-          try {
-            localStorage.removeItem(AUTH_KEY);
-          } catch {
-            /* ignore */
-          }
-          setAccount(null);
-        }}
-      />
-    </ToastProvider>
-  );
-}
-
-function WalkInApp({ account, onLogout }: { account: string; onLogout: () => void }) {
+function WalkInApp({
+  account,
+  profile,
+  onLogout,
+  onSwitchWorkspace,
+}: {
+  account: string;
+  profile: GoogleProfile;
+  onLogout: () => void;
+  onSwitchWorkspace: () => void;
+}) {
   const toast = useToast();
   const [boot] = useState(() => loadPersisted());
   const [heads, setHeads] = useState<HeadGroup[]>(boot.customHeads || DEFAULT_HEADS);
@@ -764,22 +822,43 @@ function WalkInApp({ account, onLogout }: { account: string; onLogout: () => voi
             </button>
             <div className="flex items-center justify-between gap-2 rounded-xl bg-ink-50 px-3 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand-600 text-[11px] font-black text-white">
-                  {account.slice(0, 2)}
-                </span>
+                {profile.avatarUrl ? (
+                  <img
+                    src={profile.avatarUrl}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="size-8 shrink-0 rounded-lg object-cover ring-1 ring-white"
+                  />
+                ) : (
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand-600 text-[11px] font-black text-white">
+                    {profile.name.trim().slice(0, 1).toUpperCase()}
+                  </span>
+                )}
                 <div className="min-w-0">
-                  <p className="truncate text-[12px] font-extrabold text-ink-900">{account}</p>
-                  <p className="truncate text-[10px] font-semibold text-ink-400">حساب الفرع</p>
+                  <p className="truncate text-[12px] font-extrabold text-ink-900">{profile.name}</p>
+                  <p dir="ltr" className="truncate text-right text-[10px] font-semibold text-ink-400">
+                    {account} · {profile.email}
+                  </p>
                 </div>
               </div>
-              <button
-                onClick={onLogout}
-                title="تسجيل الخروج"
-                aria-label="تسجيل الخروج"
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-ink-400 transition hover:bg-white hover:text-brand-600"
-              >
-                <LogOut className="size-4" />
-              </button>
+              <div className="flex shrink-0 items-center">
+                <button
+                  onClick={onSwitchWorkspace}
+                  title="تبديل الفرع"
+                  aria-label="تبديل الفرع"
+                  className="grid size-8 place-items-center rounded-lg text-ink-400 transition hover:bg-white hover:text-brand-600"
+                >
+                  <ArrowLeftRight className="size-4" />
+                </button>
+                <button
+                  onClick={onLogout}
+                  title="تسجيل الخروج من Google"
+                  aria-label="تسجيل الخروج"
+                  className="grid size-8 place-items-center rounded-lg text-ink-400 transition hover:bg-white hover:text-brand-600"
+                >
+                  <LogOut className="size-4" />
+                </button>
+              </div>
             </div>
           </div>
         </aside>
@@ -1334,10 +1413,22 @@ function WalkInApp({ account, onLogout }: { account: string; onLogout: () => voi
                 <RotateCcw className="size-4" />
                 يوم جديد
               </button>
-              <button onClick={onLogout} className="btn btn-danger w-full">
-                <LogOut className="size-4" />
-                تسجيل الخروج ({account})
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onSwitchWorkspace();
+                  }}
+                  className="btn btn-neutral w-full"
+                >
+                  <ArrowLeftRight className="size-4" />
+                  تبديل الفرع
+                </button>
+                <button onClick={onLogout} className="btn btn-danger w-full">
+                  <LogOut className="size-4" />
+                  خروج ({account})
+                </button>
+              </div>
             </div>
           </aside>
         </div>

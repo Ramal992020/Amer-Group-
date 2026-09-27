@@ -11,6 +11,11 @@ const __dirname = path.dirname(__filename);
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
+  // إعدادات خادم التطوير فقط — لا تؤثر على بناء الإنتاج.
+  server: {
+    host: true,          // الاستماع على 0.0.0.0 للمعاينة المباشرة
+    allowedHosts: true,  // السماح بنطاق المعاينة المُدار
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
