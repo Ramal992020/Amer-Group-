@@ -8,12 +8,21 @@ import { cn } from '../utils/cn';
 interface Props {
   account: string;
   status: SyncStatus;
+  /** Timestamp of the last successful exchange with the cloud (if any). */
+  lastSyncAt?: number | null;
   /** Test credentials (pre-filled defaults or typed) then start syncing. */
   onConnect: (url: string, key: string) => Promise<void> | void;
   onRetry: () => void;
 }
 
-export function SyncCard({ account, status, onConnect, onRetry }: Props) {
+const syncTime = (ts: number): string =>
+  new Date(ts).toLocaleTimeString('ar-EG', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+export function SyncCard({ account, status, lastSyncAt, onConnect, onRetry }: Props) {
   const toast = useToast();
   const initial = getSyncConfig(account);
   const [url, setUrl] = useState(() => normalizeUrl(initial.url));
@@ -126,12 +135,18 @@ export function SyncCard({ account, status, onConnect, onRetry }: Props) {
           اختبار وحفظ الاتصال
         </button>
 
-        {status === 'synced' && (
+        {status !== 'connecting' && (
           <button type="button" onClick={onRetry} className="btn btn-neutral w-full text-[12.5px]">
             <RefreshCw className="size-3.5" />
             إعادة المزامنة الآن
           </button>
         )}
+
+        {lastSyncAt ? (
+          <p className="tnum text-center text-[11px] font-semibold text-ink-400">
+            آخر مزامنة ناجحة مع السحابة: {syncTime(lastSyncAt)}
+          </p>
+        ) : null}
       </form>
 
       {/* SQL bootstrap — visible when the table is missing */}

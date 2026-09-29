@@ -97,6 +97,18 @@ interface DoneInfo {
 
 type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
 
+// ─── Sync timings ───
+/** How often we look for other devices' edits while the app is on screen. */
+const SYNC_POLL_VISIBLE_MS = 4000;
+/** Slower (but never zero) cadence for a backgrounded tab / locked phone. */
+const SYNC_POLL_HIDDEN_MS = 15000;
+/** Coalesce rapid taps (attendance toggles) into a single upload. */
+const SYNC_PUSH_DEBOUNCE_MS = 400;
+/** Automatic reconnect attempts after a failed boot sync (exponential backoff). */
+const MAX_SYNC_RETRIES = 6;
+/** Give up auto-retrying an upload after this many consecutive failures. */
+const MAX_PUSH_RETRIES = 8;
+
 /** شاشة انتظار التحقق من الجلسة — لا يُعرض أي شيء من التطبيق قبل انتهائها. */
 function AuthSplash() {
   return (
@@ -209,7 +221,12 @@ function WalkInApp({
   onSwitchWorkspace: () => void;
 }) {
   const toast = useToast();
-  const [boot] = useState(() => loadPersisted());
+  const [boot] = useState(() => {
+    // Scope local storage to this account BEFORE reading it: the parent effect
+    // that calls setActiveAccount() has not run yet on a cold start.
+    setActiveAccount(account);
+    return loadPersisted(account);
+  });
   const [heads, setHeads] = useState<HeadGroup[]>(boot.customHeads || DEFAULT_HEADS);
   const [managers, setManagers] = useState<ManagerTeam[]>(boot.customManagers || DEFAULT_MANAGERS);
   const [sales, setSales] = useState<SalesPerson[]>(boot.customSales || DEFAULT_SALES);
@@ -235,12 +252,28 @@ function WalkInApp({
   // ── Sync (Supabase Project URL + Publishable Key) ──
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('connecting');
   const [syncRetry, setSyncRetry] = useState(0);
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
 
   const revisionRef = useRef<number>(boot.updatedAt ?? 0);
   const applyingRemoteRef = useRef(false);
   const lastSavedStateRef = useRef<PersistedWalkin>(boot);
   // Cloud is usable only after a successful connect/pull this session.
   const syncReadyRef = useRef(false);
+  // Local edits that are not confirmed in the cloud yet — they must never be
+  // dropped, otherwise a toggle made on the phone can be lost on the laptop.
+  // Sequence based (not a boolean) so a change that lands *while* an upload is
+  // in flight is still recognised as pending.
+  const dirtySeqRef = useRef(0);
+  const syncedSeqRef = useRef(0);
+  const isDirty = (): boolean => dirtySeqRef.current !== syncedSeqRef.current;
+  // One upload at a time (mobile networks hate parallel writes).
+  const pushingRef = useRef(false);
+  // Consecutive failed uploads / reconnect attempts.
+  const pushFailuresRef = useRef(0);
+  const syncAttemptsRef = useRef(0);
+  // Break the push ⇄ pull cycle without stale closures.
+  const flushPushRef = useRef<() => Promise<void>>(async () => {});
+  const pullNowRef = useRef<() => Promise<void>>(async () => {});
 
   // Undo log — persisted + synced so "تراجع" restores the exact queue position
   // even after a reload (or on another device).
@@ -307,6 +340,12 @@ function WalkInApp({
     ],
   );
 
+  // Latest render's snapshot, so a debounced upload never sends stale data.
+  const latestSnapshotRef = useRef<PersistedWalkin>(snapshot);
+  useEffect(() => {
+    latestSnapshotRef.current = snapshot;
+  }, [snapshot]);
+
   const applyRemote = useCallback((remote: Record<string, unknown>) => {
     const state = hydrate(remote as never);
     applyingRemoteRef.current = true;
@@ -325,12 +364,100 @@ function WalkInApp({
     if (Array.isArray(state.manualOrder)) setManualOrder(state.manualOrder);
     if (Array.isArray(state.skippedIds)) setSkippedIds(state.skippedIds);
     if (Array.isArray(state.undoStack)) setUndoStack(state.undoStack);
-    savePersisted(state);
+    savePersisted(state, account);
     lastSavedStateRef.current = state;
     setTimeout(() => {
       applyingRemoteRef.current = false;
     }, 0);
   }, [account]);
+
+  /** Reconnect with exponential backoff after a transient failure. */
+  const scheduleReconnect = useCallback(() => {
+    if (syncAttemptsRef.current >= MAX_SYNC_RETRIES) return;
+    syncAttemptsRef.current += 1;
+    const delay = Math.min(30000, 4000 * 2 ** (syncAttemptsRef.current - 1));
+    window.setTimeout(() => setSyncRetry((n) => n + 1), delay);
+  }, []);
+
+  /**
+   * Upload the current local state. Returns without doing anything when an
+   * upload is already in flight.
+   *
+   *  - 'written' → cloud is now in sync, local revision confirmed
+   *  - 'stale'   → another device wrote something newer: adopt theirs instead
+   *                of overwriting it (this is what used to erase a colleague's
+   *                attendance registration)
+   *  - 'failed'  → stay dirty so the next tick / foreground retries it
+   */
+  const flushPush = useCallback(async (): Promise<void> => {
+    if (!syncReadyRef.current || pushingRef.current) return;
+    pushingRef.current = true;
+    const previousRevision = revisionRef.current;
+    const sentSeq = dirtySeqRef.current;
+    const stamp = Date.now();
+    const payload: PersistedWalkin = { ...latestSnapshotRef.current, updatedAt: stamp };
+    try {
+      const result = await pushRemote(account, payload, stamp);
+      if (result === 'written') {
+        // Only mark clean if nothing newer happened while we were uploading.
+        if (sentSeq === dirtySeqRef.current) syncedSeqRef.current = sentSeq;
+        pushFailuresRef.current = 0;
+        revisionRef.current = stamp;
+        lastSavedStateRef.current = payload;
+        savePersisted(payload, account);
+        setSyncStatus('synced');
+        setLastSyncAt(Date.now());
+      } else if (result === 'stale') {
+        // Somebody else is newer — let the next pull bring their state in.
+        if (sentSeq === dirtySeqRef.current) syncedSeqRef.current = sentSeq;
+        revisionRef.current = previousRevision;
+        await pullNowRef.current();
+      } else {
+        // Keep the edit pending: roll the revision back so a later pull is
+        // still allowed to bring remote changes in.
+        revisionRef.current = previousRevision;
+        pushFailuresRef.current += 1;
+        setSyncStatus('error');
+      }
+    } finally {
+      pushingRef.current = false;
+    }
+  }, [account]);
+  useEffect(() => {
+    flushPushRef.current = flushPush;
+  }, [flushPush]);
+
+  /** Pull the shared row and adopt it when it is newer than our copy. */
+  const pullNow = useCallback(async (): Promise<void> => {
+    if (!syncReadyRef.current) return;
+    const remote = await pullRemote(account);
+    if (!remote) {
+      setSyncStatus('error');
+      return;
+    }
+    setSyncStatus('synced');
+    setLastSyncAt(Date.now());
+    if (remote.updatedAt > revisionRef.current && !isDirty()) {
+      applyRemote(remote.payload);
+    } else if (isDirty()) {
+      // Our own edit is still pending — send it (with a fresh revision) rather
+      // than silently dropping it in favour of the remote state.
+      await flushPushRef.current();
+    }
+  }, [account, applyRemote]);
+  useEffect(() => {
+    pullNowRef.current = pullNow;
+  }, [pullNow]);
+
+  /** One tick drives both directions: upload pending edits, else poll. */
+  const syncTick = useCallback((): void => {
+    if (!syncReadyRef.current) return;
+    if (isDirty() && pushFailuresRef.current < MAX_PUSH_RETRIES) {
+      void flushPushRef.current();
+    } else {
+      void pullNowRef.current();
+    }
+  }, []);
 
   /**
    * Connect to Supabase (credentials typed or built-in defaults), then pull
@@ -352,6 +479,7 @@ function WalkInApp({
     }
     if (test === 'network-error') {
       setSyncStatus('offline');
+      scheduleReconnect();
       toast('info', 'لا يوجد اتصال بالإنترنت — يعمل التطبيق محلياً');
       return;
     }
@@ -361,16 +489,19 @@ function WalkInApp({
       return;
     }
 
-    const seed = { ...snapshot, updatedAt: revisionRef.current };
+    const seed = { ...latestSnapshotRef.current, updatedAt: revisionRef.current };
     const remote = await pullRemote(account, seed);
     if (!remote) {
       setSyncStatus('error');
+      scheduleReconnect();
       toast('error', 'تعذّر قراءة بيانات المزامنة من المشروع');
       return;
     }
+    syncAttemptsRef.current = 0;
     if (remote.updatedAt > revisionRef.current) applyRemote(remote.payload);
     syncReadyRef.current = true;
     setSyncStatus('synced');
+    setLastSyncAt(Date.now());
     if (input) toast('success', 'تم الاتصال بكل الأجهزة بنجاح');
   };
 
@@ -396,38 +527,73 @@ function WalkInApp({
     const previousComparable = JSON.stringify({ ...lastSavedStateRef.current, updatedAt: undefined });
     const nextComparable = JSON.stringify({ ...nextState, updatedAt: undefined });
     if (previousComparable !== nextComparable) saveAutomaticBackup(account, lastSavedStateRef.current);
-    savePersisted(nextState);
+    savePersisted(nextState, account);
     lastSavedStateRef.current = nextState;
 
-    if (!syncReadyRef.current) return;
-    const t = setTimeout(async () => {
-      const ok = await pushRemote(account, { ...snapshot, updatedAt: stamp });
-      setSyncStatus(ok ? 'synced' : 'error');
-      if (ok) syncReadyRef.current = true;
-    }, 500);
+    // Not connected yet (or a previous upload failed): remember the edit so it
+    // is uploaded as soon as the cloud is reachable again.
+    if (!syncReadyRef.current) {
+      dirtySeqRef.current += 1;
+      return;
+    }
+    dirtySeqRef.current += 1;
+    const t = setTimeout(() => {
+      syncTick();
+    }, SYNC_PUSH_DEBOUNCE_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot, account]);
 
-  // Poll for changes from other devices (every 5 seconds).
+  // Poll the shared row for other devices' edits.
+  //
+  // The old code bailed out on `document.hidden`, which meant a laptop whose
+  // browser window was in the background (the normal case while the manager
+  // holds the phone) stopped receiving attendance registrations entirely —
+  // and a phone whose screen was locked froze its timers. The poll therefore
+  // keeps running at all times, just slower while hidden, and every return to
+  // the foreground forces an immediate sync.
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === 'undefined' || !document.hidden,
+  );
+
   useEffect(() => {
-    const id = setInterval(async () => {
-      if (!syncReadyRef.current || document.hidden) return;
-      const remote = await pullRemote(account);
-      if (!remote) {
-        setSyncStatus('error');
-        return;
-      }
-      setSyncStatus('synced');
-      if (remote.updatedAt > revisionRef.current) applyRemote(remote.payload);
-    }, 5000);
+    const onVisible = () => {
+      const visible = typeof document === 'undefined' || !document.hidden;
+      setPageVisible(visible);
+      if (!visible) return;
+      // Back in the foreground: phone unlocked, laptop tab re-focused,
+      // or the page restored from the back/forward cache.
+      syncAttemptsRef.current = 0;
+      pushFailuresRef.current = 0;
+      syncTick();
+    };
+    const onOnline = () => {
+      syncAttemptsRef.current = 0;
+      pushFailuresRef.current = 0;
+      syncTick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    window.addEventListener('pageshow', onVisible);
+    window.addEventListener('online', onOnline);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [syncTick]);
+
+  useEffect(() => {
+    const id = setInterval(syncTick, pageVisible ? SYNC_POLL_VISIBLE_MS : SYNC_POLL_HIDDEN_MS);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyRemote, account]);
+  }, [pageVisible, syncTick]);
 
   const connectWithConfig = (url: string, key: string) => runSync({ url, key });
 
   const retrySync = () => {
+    syncAttemptsRef.current = 0;
+    pushFailuresRef.current = 0;
     setSyncStatus('connecting');
     setSyncRetry((n) => n + 1);
   };
@@ -1358,6 +1524,7 @@ function WalkInApp({
                 <SyncCard
                   account={account}
                   status={syncStatus}
+                  lastSyncAt={lastSyncAt}
                   onConnect={connectWithConfig}
                   onRetry={retrySync}
                 />
