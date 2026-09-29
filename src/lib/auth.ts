@@ -157,17 +157,86 @@ export async function signOutFromSupabase(): Promise<void> {
   }
 }
 
+// ═══════════════ الدخول بالبريد الإلكتروني (بديل عن Google) ═══════════════
+
+export interface EmailAuthResult {
+  /** false = فشل (انظر error) */
+  ok: boolean;
+  error?: string;
+  /** عند إنشاء حساب جديد مع تفعيل تأكيد البريد في Supabase. */
+  needsConfirmation?: boolean;
+}
+
+/** دخول ببريد + كلمة مرور (حساب موجود مسبقاً). */
+export async function signInWithEmailPassword(email: string, password: string): Promise<EmailAuthResult> {
+  try {
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) return { ok: false, error: describeAuthError(error) };
+    return { ok: true }; // onAuthStateChange سيلتقط الجلسة ويفتح التطبيق
+  } catch (err) {
+    return { ok: false, error: describeAuthError(err) };
+  }
+}
+
+/**
+ * إنشاء حساب جديد ببريد + كلمة مرور.
+ * لو كان «تأكيد البريد» مفعّلاً في Supabase سيعاد needsConfirmation
+ * (لا جلسة قبل فتح رسالة التأكيد) — وإلا يدخل المستخدم فوراً.
+ */
+export async function signUpWithEmailPassword(email: string, password: string): Promise<EmailAuthResult> {
+  try {
+    const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
+    if (error) return { ok: false, error: describeAuthError(error) };
+    if (data.session) return { ok: true };
+    return { ok: true, needsConfirmation: true };
+  } catch (err) {
+    return { ok: false, error: describeAuthError(err) };
+  }
+}
+
+/** إرسال رمز دخول (6 أرقام) إلى البريد — بدون كلمة مرور نهائياً. */
+export async function sendEmailOtp(email: string): Promise<string | null> {
+  try {
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: { shouldCreateUser: true },
+    });
+    return error ? describeAuthError(error) : null;
+  } catch (err) {
+    return describeAuthError(err);
+  }
+}
+
+/** تأكيد الرمز البريدي وفتح الجلسة. */
+export async function verifyEmailOtp(email: string, token: string): Promise<string | null> {
+  try {
+    const { error } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token: token.trim(),
+      type: 'email',
+    });
+    return error ? describeAuthError(error) : null;
+  } catch (err) {
+    return describeAuthError(err);
+  }
+}
+
 // ═══════════════ بيانات المستخدم ═══════════════
 
 export function getGoogleProfile(user: User | null): GoogleProfile | null {
   if (!user) return null;
   const meta = (user.user_metadata ?? {}) as Record<string, unknown>;
-  const name =
+  const email = user.email ?? (typeof meta.email === 'string' ? meta.email : '');
+  // للمستخدمين القادمين من Google: الاسم من الميتاداتا.
+  // لمستخدمي البريد: نبني اسماً لطيفاً من الجزء المحلي في البريد.
+  const metaName =
     (typeof meta.full_name === 'string' && meta.full_name) ||
     (typeof meta.name === 'string' && meta.name) ||
-    (typeof user.email === 'string' && user.email) ||
-    'مستخدم Google';
-  const email = user.email ?? (typeof meta.email === 'string' ? meta.email : '');
+    '';
+  const derivedName = email
+    ? email.split('@')[0].replace(/[._-]+/g, ' ').trim()
+    : '';
+  const name = metaName || derivedName || email || 'مستخدم';
   const avatarUrl =
     (typeof meta.avatar_url === 'string' && meta.avatar_url) ||
     (typeof meta.picture === 'string' && meta.picture) ||
@@ -194,8 +263,30 @@ export function describeAuthError(err: unknown): string {
   if (lower.includes('redirect') || lower.includes('not redirect')) {
     return 'رابط التطبيق غير مسموح في Supabase. أضف رابط هذه الصفحة إلى: Authentication ← URL Configuration ← Redirect URLs.';
   }
-  if (lower.includes('signups not allowed')) {
-    return 'تسجيل الدخول موقوف في إعدادات مشروع Supabase (Signups disabled). اسمح به من Authentication ← Sign In / Up.';
+  if (lower.includes('signups not allowed') || lower.includes('signup is disabled')) {
+    return 'تسجيل الحسابات الجديدة موقوف في إعدادات مشروع Supabase. اسمح به من Authentication ← Sign In / Up.';
+  }
+  if (lower.includes('invalid login credentials')) {
+    return 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
+  }
+  if (lower.includes('email not confirmed')) {
+    return 'لم يتم تأكيد هذا البريد بعد — افتح رسالة التأكيد المرسلة من Supabase ثم أعد المحاولة (أو عطّل «Confirm email» من Authentication ← Providers ← Email إن أردت الدخول الفوري).';
+  }
+  if (
+    lower.includes('rate limit') ||
+    lower.includes('only request this once every') ||
+    lower.includes('too many requests')
+  ) {
+    return 'تجاوزت حد إرسال الرسائل مؤقتاً — انتظر دقيقة ثم أعد المحاولة. (الحد الافتراضي ضيق؛ لرفعه اضبط SMTP مخصصاً — الخطوات في docs/GOOGLE_AUTH_SETUP.md).';
+  }
+  if (lower.includes('password should be at least')) {
+    return 'كلمة المرور يجب ألا تقل عن 6 أحرف.';
+  }
+  if (lower.includes('invalid email') || lower.includes('unable to validate email')) {
+    return 'صيغة البريد الإلكتروني غير صحيحة.';
+  }
+  if (lower.includes('otp') || lower.includes('token is') || lower.includes('expired')) {
+    return 'الرمز غير صحيح أو انتهت صلاحيته — اطلب رمزاً جديداً.';
   }
   if (
     lower.includes('failed to fetch') ||

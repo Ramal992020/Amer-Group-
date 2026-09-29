@@ -1,7 +1,24 @@
-import { useEffect, useState } from 'react';
-import { AlertCircle, ShieldCheck, Building2, Loader2, Info } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ShieldCheck,
+  Building2,
+  Loader2,
+  Info,
+  Mail,
+  Lock,
+  KeyRound,
+  CheckCircle2,
+  UserPlus,
+} from 'lucide-react';
 import { AmerLogo } from './AmerLogo';
-import { signInWithGoogle } from '../lib/auth';
+import {
+  signInWithGoogle,
+  signInWithEmailPassword,
+  signUpWithEmailPassword,
+  sendEmailOtp,
+  verifyEmailOtp,
+} from '../lib/auth';
 import { SUPABASE_PROJECT_REF, getOAuthRedirectTo, getSupabaseCallbackUrl } from '../lib/supabase';
 
 /** شعار Google الرسمي (متعدد الألوان). */
@@ -28,31 +45,120 @@ function GoogleIcon() {
   );
 }
 
+type EmailMode = 'password' | 'otp';
+
+/**
+ * إظهار زر «Sign in with Google».
+ * false الآن لأن شاشة الموافقة في Google Cloud لسه بترفض (403 access_denied).
+ * بعد حل المشكلة (Test users أو In production) غيّرها إلى true وسيظهر الزر فوراً
+ * بدون أي تعديل آخر — كل كود Google جاهز ومتصل فعلياً بـ Supabase.
+ */
+const GOOGLE_ENABLED = false;
+
 export function LoginScreen() {
-  const [busy, setBusy] = useState(false);
+  // ── Google ──
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [showHelp, setShowHelp] = useState(false);
 
-  // لو رجع المستخدم من نافذة Google بدون إتمام (أو فشل التبادل) نزيل حالة الانتظار.
+  // ── البريد الإلكتروني ──
+  const [emailMode, setEmailMode] = useState<EmailMode>('password');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignup, setIsSignup] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otp, setOtp] = useState('');
+  const [resendIn, setResendIn] = useState(0);
+  const otpRef = useRef<HTMLInputElement>(null);
+
+  // لو رجع المستخدم من نافذة Google بدون إتمام نزيل حالة الانتظار.
   useEffect(() => {
-    if (busy) {
-      const t = setTimeout(() => setBusy(false), 15000);
+    if (googleBusy) {
+      const t = setTimeout(() => setGoogleBusy(false), 15000);
       return () => clearTimeout(t);
     }
-  }, [busy]);
+  }, [googleBusy]);
+
+  // عدّاد إعادة إرسال الرمز.
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendIn]);
 
   const handleGoogle = async () => {
     setError('');
-    setBusy(true);
+    setInfo('');
+    setGoogleBusy(true);
     const err = await signInWithGoogle();
     if (err) {
       setError(err);
-      setBusy(false);
+      setGoogleBusy(false);
     }
     // عند النجاح: المتصفح يُحوَّل لشاشة اختيار حساب Google ثم يعود للتطبيق.
   };
 
+  const validEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setInfo('');
+    if (!validEmail(email)) return setError('أدخل بريداً إلكترونياً صحيحاً.');
+    if (password.trim().length < 6) return setError('كلمة المرور يجب ألا تقل عن 6 أحرف.');
+    setEmailBusy(true);
+    const res = isSignup
+      ? await signUpWithEmailPassword(email, password)
+      : await signInWithEmailPassword(email, password);
+    setEmailBusy(false);
+    if (!res.ok) {
+      setError(res.error ?? 'تعذّر تسجيل الدخول.');
+      return;
+    }
+    if (res.needsConfirmation) {
+      setInfo(
+        'تم إنشاء الحساب ✓ — افتح بريدك واضغط رابط التأكيد المرسل من Supabase، ثم سجّل الدخول من هنا. (أو عطّل «Confirm email» من إعدادات Supabase للدخول الفوري).',
+      );
+      setIsSignup(false);
+    }
+    // عند النجاح يتولى onAuthStateChange فتح التطبيق تلقائياً.
+  };
+
+  const handleSendOtp = async () => {
+    setError('');
+    setInfo('');
+    if (!validEmail(email)) return setError('أدخل بريداً إلكترونياً صحيحاً.');
+    setEmailBusy(true);
+    const err = await sendEmailOtp(email);
+    setEmailBusy(false);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setOtpSent(true);
+    setResendIn(60);
+    setInfo(`أرسلنا رمز دخول من 6 أرقام إلى ${email.trim()} — تحقق من البريد (ومجلد Spam).`);
+    setTimeout(() => otpRef.current?.focus(), 50);
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setInfo('');
+    if (otp.trim().length < 6) return setError('أدخل رمز التحقق المكوّن من 6 أرقام.');
+    setEmailBusy(true);
+    const err = await verifyEmailOtp(email, otp);
+    setEmailBusy(false);
+    if (err) setError(err);
+    // عند النجاح تُفتح الجلسة تلقائياً عبر onAuthStateChange.
+  };
+
   const needsSetup = error.includes('غير مفعّل') || error.includes('Redirect');
+
+  const emailInputCls =
+    'field ps-10 text-left dir-ltr placeholder:text-ink-300'; /* ltr للبريد */
 
   return (
     <div dir="rtl" className="fixed inset-0 z-[999] overflow-y-auto bg-ink-50 px-5 py-8">
@@ -89,30 +195,239 @@ export function LoginScreen() {
             <div className="text-center">
               <h2 className="font-display text-[17px] font-black text-ink-900">تسجيل الدخول</h2>
               <p className="mt-1 text-[12px] font-semibold text-ink-400">
-                الدخول يتم حصراً بحساب Google عبر Supabase Authentication
+                {GOOGLE_ENABLED
+                  ? 'عبر Google أو البريد الإلكتروني — بحساب موثّق من Supabase'
+                  : 'بحساب بريد إلكتروني موثّق من Supabase'}
               </p>
             </div>
 
             {/* Google Sign-In */}
-            <button
-              type="button"
-              onClick={handleGoogle}
-              disabled={busy}
-              className="flex w-full items-center justify-center gap-3 rounded-xl border border-ink-200 bg-white py-3.5 text-[14.5px] font-extrabold text-ink-800 shadow-sm transition hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-md active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {busy ? (
-                <>
-                  <Loader2 className="size-5 animate-spin text-brand-600" />
-                  جارٍ فتح شاشة اختيار حساب Google…
-                </>
-              ) : (
-                <>
-                  <GoogleIcon />
-                  Sign in with Google
-                </>
-              )}
-            </button>
+            {GOOGLE_ENABLED && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleGoogle}
+                  disabled={googleBusy || emailBusy}
+                  className="flex w-full items-center justify-center gap-3 rounded-xl border border-ink-200 bg-white py-3.5 text-[14.5px] font-extrabold text-ink-800 shadow-sm transition hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-md active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {googleBusy ? (
+                    <>
+                      <Loader2 className="size-5 animate-spin text-brand-600" />
+                      جارٍ فتح شاشة اختيار حساب Google…
+                    </>
+                  ) : (
+                    <>
+                      <GoogleIcon />
+                      Sign in with Google
+                    </>
+                  )}
+                </button>
 
+                {/* divider */}
+                <div className="flex items-center gap-3">
+                  <span className="h-px flex-1 bg-ink-100" />
+                  <span className="text-[11px] font-bold text-ink-300">أو الدخول بالبريد الإلكتروني</span>
+                  <span className="h-px flex-1 bg-ink-100" />
+                </div>
+              </>
+            )}
+
+            {/* tabs */}
+            <div className="grid grid-cols-2 gap-1 rounded-xl bg-ink-50 p-1">
+              {(
+                [
+                  { id: 'password', label: 'بريد + كلمة مرور', Icon: Lock },
+                  { id: 'otp', label: 'رمز بدون كلمة مرور', Icon: KeyRound },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    setEmailMode(t.id);
+                    setError('');
+                    setInfo('');
+                    setOtpSent(false);
+                    setOtp('');
+                  }}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-[12px] font-extrabold transition ${
+                    emailMode === t.id
+                      ? 'bg-white text-brand-600 shadow-sm ring-1 ring-ink-100'
+                      : 'text-ink-400 hover:text-ink-600'
+                  }`}
+                >
+                  <t.Icon className="size-3.5" />
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* ── بريد + كلمة مرور ── */}
+            {emailMode === 'password' && (
+              <form onSubmit={handlePasswordSubmit} className="space-y-3">
+                <div className="relative">
+                  <Mail className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
+                  <input
+                    type="email"
+                    dir="ltr"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      setError('');
+                    }}
+                    placeholder="name@amer-group.com"
+                    autoComplete="email"
+                    className={emailInputCls}
+                  />
+                </div>
+                <div className="relative">
+                  <Lock className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
+                  <input
+                    type="password"
+                    dir="ltr"
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setError('');
+                    }}
+                    placeholder="••••••••"
+                    autoComplete={isSignup ? 'new-password' : 'current-password'}
+                    className={emailInputCls}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={emailBusy || googleBusy}
+                  className="btn btn-primary w-full py-3 text-[14px]"
+                >
+                  {emailBusy ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      جارٍ التحقق من Supabase…
+                    </>
+                  ) : isSignup ? (
+                    <>
+                      <UserPlus className="size-4" />
+                      إنشاء حساب جديد
+                    </>
+                  ) : (
+                    'دخول'
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSignup((v) => !v);
+                    setError('');
+                    setInfo('');
+                  }}
+                  className="w-full text-center text-[11.5px] font-extrabold text-brand-600 transition hover:text-brand-700"
+                >
+                  {isSignup ? 'لدي حساب بالفعل ← تسجيل الدخول' : 'ليس لدي حساب ← إنشاء حساب جديد'}
+                </button>
+              </form>
+            )}
+
+            {/* ── رمز بريدي بدون كلمة مرور ── */}
+            {emailMode === 'otp' && !otpSent && (
+              <div className="space-y-3">
+                <div className="relative">
+                  <Mail className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
+                  <input
+                    type="email"
+                    dir="ltr"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      setError('');
+                    }}
+                    placeholder="name@amer-group.com"
+                    autoComplete="email"
+                    className={emailInputCls}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSendOtp}
+                  disabled={emailBusy || googleBusy}
+                  className="btn btn-primary w-full py-3 text-[14px]"
+                >
+                  {emailBusy ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      جارٍ إرسال الرمز…
+                    </>
+                  ) : (
+                    <>
+                      <KeyRound className="size-4" />
+                      إرسال رمز الدخول إلى بريدي
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {emailMode === 'otp' && otpSent && (
+              <form onSubmit={handleVerifyOtp} className="space-y-3">
+                <p dir="ltr" className="text-center text-[11.5px] font-bold text-ink-500">
+                  {email.trim()}
+                </p>
+                <div className="relative">
+                  <KeyRound className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
+                  <input
+                    ref={otpRef}
+                    dir="ltr"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={otp}
+                    onChange={(e) => {
+                      setOtp(e.target.value.replace(/\D/g, ''));
+                      setError('');
+                    }}
+                    placeholder="——————"
+                    className="field ps-10 text-center text-[18px] font-black tracking-[0.5em]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={emailBusy}
+                  className="btn btn-primary w-full py-3 text-[14px]"
+                >
+                  {emailBusy ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      جارٍ التحقق…
+                    </>
+                  ) : (
+                    'تأكيد الرمز ودخول'
+                  )}
+                </button>
+                <div className="flex items-center justify-between text-[11.5px] font-extrabold">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOtpSent(false);
+                      setOtp('');
+                      setError('');
+                      setInfo('');
+                    }}
+                    className="text-ink-400 transition hover:text-ink-600"
+                  >
+                    تغيير البريد
+                  </button>
+                  <button
+                    type="button"
+                    disabled={resendIn > 0 || emailBusy}
+                    onClick={handleSendOtp}
+                    className="text-brand-600 transition hover:text-brand-700 disabled:cursor-not-allowed disabled:text-ink-300"
+                  >
+                    {resendIn > 0 ? `إعادة الإرسال بعد ${resendIn} ثانية` : 'إعادة إرسال الرمز'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* alerts */}
             {error && (
               <div
                 role="alert"
@@ -159,15 +474,25 @@ export function LoginScreen() {
               </div>
             )}
 
+            {info && (
+              <div
+                role="status"
+                className="anim-slide-in flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-[12px] font-bold leading-relaxed text-emerald-700"
+              >
+                <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+                <span>{info}</span>
+              </div>
+            )}
+
             <div className="flex items-center justify-center gap-1.5 pt-1 text-[11px] font-medium text-ink-400">
               <ShieldCheck className="size-3.5 text-emerald-500" />
-              لا يمكن الدخول بدون جلسة موثّقة من Supabase — تم إلغاء أي دخول تجريبي أو زائر
+              لا يمكن الدخول بدون جلسة موثّقة من Supabase — لا يوجد دخول تجريبي أو زائر
             </div>
 
             <p className="text-center text-[11px] font-semibold leading-relaxed text-ink-300">
               بعد تسجيل الدخول ستختار مساحة عمل الفرع (SITE / RESTA)،
               <br />
-              وكل من يسجّل بنفس مساحة العمل يرى التعديلات لحظياً.
+              وأي شخص يدخل بنفس مساحة العمل من أي جهاز يرى نفس التعديلات لحظياً.
             </p>
           </div>
         </div>

@@ -852,7 +852,7 @@ function WalkInApp({
                 </button>
                 <button
                   onClick={onLogout}
-                  title="تسجيل الخروج من Google"
+                  title="تسجيل الخروج"
                   aria-label="تسجيل الخروج"
                   className="grid size-8 place-items-center rounded-lg text-ink-400 transition hover:bg-white hover:text-brand-600"
                 >

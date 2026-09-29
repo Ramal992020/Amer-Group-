@@ -115,7 +115,7 @@ export function WorkspaceGate({ profile, verified, onPick, onLogout, onCancel }:
               className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11.5px] font-extrabold text-ink-400 transition hover:bg-brand-50 hover:text-brand-700"
             >
               <LogOut className="size-3.5" />
-              تسجيل الخروج من حساب Google
+              تسجيل الخروج
             </button>
             {onCancel && (
               <button
