@@ -33,7 +33,26 @@ contains the whole app inlined.
 ```bash
 grep -o "visibilitychange" dist/index.html          # sync foreground listener
 grep -o "updated_at=lt\." dist/index.html           # revision-guarded PATCH
+grep -o "return=representation" dist/index.html     # PATCH result is verified
+grep -o "postgres_changes" dist/index.html          # Realtime subscription
+grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1/ root
+                                                    # check is what killed sync
 ```
+
+## Sync layer — things that must stay true
+
+* **Never call `GET /rest/v1/` (the PostgREST OpenAPI root) with the publishable
+  key.** Supabase answers `401 Secret API key required` for `sb_publishable_…`
+  keys. The old connection test did exactly that, so every device concluded
+  «المفتاح غير صحيح» and sync never started in production (the `walkin_state`
+  table stayed empty). Credentials are verified against the table itself.
+* **Revision stamps use the server clock** (`syncNow()` in `src/lib/sync.ts`,
+  learned from the `Date` response header). Comparing `Date.now()` from two
+  different devices made the slower device lose its own edits.
+* A guarded `PATCH` that matches zero rows is reported as `'stale'`, never as
+  `'written'` (`Prefer: return=representation`).
+* Polling is the source of truth; Realtime (`subscribeRemote`) only makes it
+  instant when the table is in the `supabase_realtime` publication.
 
 If the marker is missing, the change was made in a file the build never reads.
 

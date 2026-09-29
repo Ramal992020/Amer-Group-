@@ -67,7 +67,16 @@ import type { GoogleProfile, Workspace } from './lib/auth';
 import { SyncCard } from './components/SyncCard';
 import { BackupPanel } from './components/BackupPanel';
 import { saveAutomaticBackup } from './lib/backups';
-import { pullRemote, pushRemote, testConnection, normalizeUrl, getSyncConfig } from './lib/sync';
+import {
+  pullRemote,
+  pushRemote,
+  subscribeRemote,
+  syncNow,
+  testConnection,
+  normalizeUrl,
+  getSyncConfig,
+  getLastSyncError,
+} from './lib/sync';
 import type { SyncConfig, SyncStatus } from './lib/sync';
 import { CurrentTurn } from './components/CurrentTurn';
 import type { SubstituteOption } from './components/CurrentTurn';
@@ -253,6 +262,8 @@ function WalkInApp({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('connecting');
   const [syncRetry, setSyncRetry] = useState(0);
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
+  // Bumped after every successful connect so the Realtime channel (re)opens.
+  const [realtimeGen, setRealtimeGen] = useState(0);
 
   const revisionRef = useRef<number>(boot.updatedAt ?? 0);
   const applyingRemoteRef = useRef(false);
@@ -394,7 +405,8 @@ function WalkInApp({
     pushingRef.current = true;
     const previousRevision = revisionRef.current;
     const sentSeq = dirtySeqRef.current;
-    const stamp = Date.now();
+    // Server-clock stamp: comparable with stamps written by the other devices.
+    const stamp = Math.max(syncNow(), previousRevision + 1);
     const payload: PersistedWalkin = { ...latestSnapshotRef.current, updatedAt: stamp };
     try {
       const result = await pushRemote(account, payload, stamp);
@@ -408,10 +420,13 @@ function WalkInApp({
         setSyncStatus('synced');
         setLastSyncAt(Date.now());
       } else if (result === 'stale') {
-        // Somebody else is newer — let the next pull bring their state in.
+        // Somebody else wrote a newer revision (on the shared server clock)
+        // while we were editing — adopt theirs and say so instead of silently
+        // replacing what is on this screen.
         if (sentSeq === dirtySeqRef.current) syncedSeqRef.current = sentSeq;
         revisionRef.current = previousRevision;
         await pullNowRef.current();
+        toast('info', 'تم تحديث البيانات من جهاز آخر على نفس الحساب');
       } else {
         // Keep the edit pending: roll the revision back so a later pull is
         // still allowed to bring remote changes in.
@@ -422,7 +437,7 @@ function WalkInApp({
     } finally {
       pushingRef.current = false;
     }
-  }, [account]);
+  }, [account, toast]);
   useEffect(() => {
     flushPushRef.current = flushPush;
   }, [flushPush]);
@@ -488,8 +503,13 @@ function WalkInApp({
       toast('error', 'شغّل ملف SQL في Supabase أولاً (التعليمات في كارت المزامنة)');
       return;
     }
+    if (test === 'no-access') {
+      setSyncStatus('error');
+      toast('error', 'الجدول موجود لكن سياسة الوصول (RLS) تمنع القراءة/الكتابة — شغّل ملف SQL مرة أخرى');
+      return;
+    }
 
-    const seed = { ...latestSnapshotRef.current, updatedAt: revisionRef.current };
+    const seed = { ...latestSnapshotRef.current, updatedAt: revisionRef.current || syncNow() };
     const remote = await pullRemote(account, seed);
     if (!remote) {
       setSyncStatus('error');
@@ -498,11 +518,19 @@ function WalkInApp({
       return;
     }
     syncAttemptsRef.current = 0;
-    if (remote.updatedAt > revisionRef.current) applyRemote(remote.payload);
+    if (remote.updatedAt > revisionRef.current) {
+      applyRemote(remote.payload);
+    } else if (remote.updatedAt < revisionRef.current || isDirty()) {
+      // This device holds edits made while offline / before connecting —
+      // upload them now instead of waiting for the next local change.
+      dirtySeqRef.current += 1;
+    }
     syncReadyRef.current = true;
     setSyncStatus('synced');
     setLastSyncAt(Date.now());
+    setRealtimeGen((n) => n + 1);
     if (input) toast('success', 'تم الاتصال بكل الأجهزة بنجاح');
+    if (isDirty()) void flushPushRef.current();
   };
 
   // Auto-connect on boot (built-in credentials).
@@ -521,7 +549,7 @@ function WalkInApp({
   // Save locally + push to the cloud on every change.
   useEffect(() => {
     if (applyingRemoteRef.current) return;
-    const stamp = Date.now();
+    const stamp = Math.max(syncNow(), revisionRef.current + 1);
     revisionRef.current = stamp;
     const nextState: PersistedWalkin = { ...snapshot, updatedAt: stamp };
     const previousComparable = JSON.stringify({ ...lastSavedStateRef.current, updatedAt: undefined });
@@ -588,6 +616,16 @@ function WalkInApp({
     const id = setInterval(syncTick, pageVisible ? SYNC_POLL_VISIBLE_MS : SYNC_POLL_HIDDEN_MS);
     return () => clearInterval(id);
   }, [pageVisible, syncTick]);
+
+  // Realtime: when Supabase pushes a change made on another device, pull it
+  // immediately instead of waiting for the next poll tick. Polling above stays
+  // as the fallback in case Realtime is not enabled on the table.
+  useEffect(() => {
+    if (realtimeGen === 0) return;
+    return subscribeRemote(account, (updatedAt) => {
+      if (updatedAt > revisionRef.current) syncTick();
+    });
+  }, [account, realtimeGen, syncTick]);
 
   const connectWithConfig = (url: string, key: string) => runSync({ url, key });
 
@@ -1525,6 +1563,7 @@ function WalkInApp({
                   account={account}
                   status={syncStatus}
                   lastSyncAt={lastSyncAt}
+                  errorDetail={syncStatus === 'error' ? getLastSyncError() : null}
                   onConnect={connectWithConfig}
                   onRetry={retrySync}
                 />

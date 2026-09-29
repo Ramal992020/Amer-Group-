@@ -10,6 +10,8 @@ interface Props {
   status: SyncStatus;
   /** Timestamp of the last successful exchange with the cloud (if any). */
   lastSyncAt?: number | null;
+  /** Technical reason of the current failure (HTTP status / PostgREST code). */
+  errorDetail?: string | null;
   /** Test credentials (pre-filled defaults or typed) then start syncing. */
   onConnect: (url: string, key: string) => Promise<void> | void;
   onRetry: () => void;
@@ -22,7 +24,7 @@ const syncTime = (ts: number): string =>
     second: '2-digit',
   });
 
-export function SyncCard({ account, status, lastSyncAt, onConnect, onRetry }: Props) {
+export function SyncCard({ account, status, lastSyncAt, errorDetail, onConnect, onRetry }: Props) {
   const toast = useToast();
   const initial = getSyncConfig(account);
   const [url, setUrl] = useState(() => normalizeUrl(initial.url));
@@ -145,6 +147,15 @@ export function SyncCard({ account, status, lastSyncAt, onConnect, onRetry }: Pr
         {lastSyncAt ? (
           <p className="tnum text-center text-[11px] font-semibold text-ink-400">
             آخر مزامنة ناجحة مع السحابة: {syncTime(lastSyncAt)}
+          </p>
+        ) : null}
+
+        {status === 'error' && errorDetail ? (
+          <p
+            dir="ltr"
+            className="break-all rounded-lg border border-red-100 bg-red-50 px-2.5 py-1.5 text-center text-[11px] font-semibold text-red-700"
+          >
+            {errorDetail}
           </p>
         ) : null}
       </form>
