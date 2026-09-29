@@ -139,7 +139,7 @@ export function LoginScreen() {
     }
     setOtpSent(true);
     setResendIn(60);
-    setInfo(`أرسلنا رمز دخول من 6 أرقام إلى ${email.trim()} — تحقق من البريد (ومجلد Spam).`);
+    setInfo(`أرسلنا رمز الدخول إلى ${email.trim()} — تحقق من البريد (ومجلد Spam).`);
     setTimeout(() => otpRef.current?.focus(), 50);
   };
 
@@ -147,7 +147,7 @@ export function LoginScreen() {
     e.preventDefault();
     setError('');
     setInfo('');
-    if (otp.trim().length < 6) return setError('أدخل رمز التحقق المكوّن من 6 أرقام.');
+    if (otp.trim().length < 6) return setError('أدخل الرمز كاملاً كما وصل في البريد (من 6 إلى 8 أرقام).');
     setEmailBusy(true);
     const err = await verifyEmailOtp(email, otp);
     setEmailBusy(false);
@@ -378,14 +378,14 @@ export function LoginScreen() {
                     ref={otpRef}
                     dir="ltr"
                     inputMode="numeric"
-                    maxLength={6}
+                    maxLength={8}
                     value={otp}
                     onChange={(e) => {
                       setOtp(e.target.value.replace(/\D/g, ''));
                       setError('');
                     }}
-                    placeholder="——————"
-                    className="field ps-10 text-center text-[18px] font-black tracking-[0.5em]"
+                    placeholder="••••••••"
+                    className="field ps-10 text-center text-[18px] font-black tracking-[0.4em]"
                   />
                 </div>
                 <button
@@ -504,6 +504,35 @@ export function LoginScreen() {
           <Building2 className="size-3.5" />
           Amer Group Holding · Real Estate Operations
         </p>
+
+        {/* رابط تحميل ملفات المشروع (للمطور/المدير) — يفتح في تاب جديد */}
+        <p className="mt-3 text-center">
+          <a
+            href="/downloads/index.html"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-[11px] font-extrabold text-ink-400 ring-1 ring-ink-100 transition hover:text-brand-600 hover:ring-brand-200"
+          >
+            📦 تحميل ملفات المشروع (ZIP)
+          </a>
+        </p>
+
+        {/* لو إطار المعاينة منع فتح تاب جديد — نعرض الرابط الكامل للنسخ اليدوي */}
+        <div className="anim-fade-up mt-2 rounded-xl border border-ink-100 bg-white p-3">
+          <p className="text-[10.5px] font-bold leading-relaxed text-ink-400">
+            لو الزر فوق مش فتح حاجة (قيد أمان إطار المعاينة): انسخ الرابط ده
+            <span className="text-ink-600"> (دوس عليه لتحديده) </span>
+            وافتحه في <span className="text-brand-600">تاب متصفح جديد</span>:
+          </p>
+          <input
+            readOnly
+            dir="ltr"
+            value={`${window.location.origin}/downloads/amer-group-source.zip`}
+            onFocus={(e) => e.currentTarget.select()}
+            onClick={(e) => e.currentTarget.select()}
+            className="mt-1.5 w-full cursor-text rounded-lg bg-ink-50 px-2.5 py-2 text-left text-[11px] font-bold text-brand-600 outline-none"
+          />
+        </div>
       </div>
     </div>
   );
