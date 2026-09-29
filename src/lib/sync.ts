@@ -184,6 +184,35 @@ export interface RemoteState {
   updatedAt: number;
 }
 
+/** Result of an upload attempt. */
+export type PushResult =
+  /** The cloud row now holds exactly what we sent. */
+  | 'written'
+  /** Another device had written a newer state — we must NOT overwrite it. */
+  | 'stale'
+  /** The request failed (network / server); the edit stays pending locally. */
+  | 'failed';
+
+interface StandardRow {
+  payload: Record<string, unknown>;
+  updated_at: string;
+}
+
+type StandardRead =
+  | { ok: true; row: StandardRow | null }
+  | { ok: false };
+
+/** Read this account's row from the standard `walkin_state` table. */
+async function readStandardRow(cfg: SyncConfig, account: string): Promise<StandardRead> {
+  const res = await fetch(
+    `${cfg.url}/rest/v1/${STANDARD_TABLE}?account=eq.${encodeURIComponent(account)}&select=payload,updated_at`,
+    { headers: headers(cfg), cache: 'no-store', signal: withTimeout(10000) },
+  );
+  if (!res.ok) return { ok: false };
+  const rows = (await res.json()) as StandardRow[];
+  return { ok: true, row: Array.isArray(rows) && rows.length > 0 ? rows[0] : null };
+}
+
 /** Read this account's state. Seeds the row when it does not exist yet. */
 export async function pullRemote(
   account: string,
@@ -192,22 +221,17 @@ export async function pullRemote(
   const cfg = getSyncConfig(account);
   try {
     if (isStandard(cfg)) {
-      const res = await fetch(
-        `${cfg.url}/rest/v1/${STANDARD_TABLE}?account=eq.${encodeURIComponent(account)}&select=payload,updated_at`,
-        { headers: headers(cfg), cache: 'no-store', signal: withTimeout(10000) },
-      );
-      if (res.status === 404 || res.status === 409) return null;
-      if (!res.ok) return null;
-      const rows = (await res.json()) as { payload: Record<string, unknown>; updated_at: string }[];
-      if (!Array.isArray(rows) || rows.length === 0) {
-        if (seed !== undefined && (await pushRemote(account, seed))) {
+      const read = await readStandardRow(cfg, account);
+      if (!read.ok) return null;
+      if (!read.row) {
+        if (seed !== undefined && (await pushRemote(account, seed)) !== 'failed') {
           return { payload: seed as Record<string, unknown>, updatedAt: Date.now() };
         }
         return null;
       }
       return {
-        payload: rows[0].payload ?? {},
-        updatedAt: rows[0].updated_at ? new Date(rows[0].updated_at).getTime() : 0,
+        payload: read.row.payload ?? {},
+        updatedAt: read.row.updated_at ? new Date(read.row.updated_at).getTime() : 0,
       };
     }
 
@@ -220,7 +244,7 @@ export async function pullRemote(
     if (!res.ok) return null;
     const rows = (await res.json()) as Record<string, unknown>[];
     if (!Array.isArray(rows) || rows.length === 0) {
-      if (seed !== undefined && (await pushRemote(account, seed))) {
+      if (seed !== undefined && (await pushRemote(account, seed)) !== 'failed') {
         return { payload: seed as Record<string, unknown>, updatedAt: Date.now() };
       }
       return null;
@@ -235,22 +259,58 @@ export async function pullRemote(
   }
 }
 
-/** Create or update this account's state. */
-export async function pushRemote(account: string, payload: unknown): Promise<boolean> {
+/**
+ * Create or update this account's state.
+ *
+ * `stamp` is the local revision (ms) of the payload being sent. The write is
+ * guarded so an older device can never silently overwrite a newer one — the
+ * classic cause of "attendance registered on the phone vanished on the
+ * laptop" (and vice-versa). Without the guard, whichever device happened to
+ * fire its debounced upload last won, regardless of who edited last.
+ */
+export async function pushRemote(
+  account: string,
+  payload: unknown,
+  stamp: number = Date.now(),
+): Promise<PushResult> {
   const cfg = getSyncConfig(account);
+  const stampIso = new Date(stamp).toISOString();
   try {
     if (isStandard(cfg)) {
+      // Read-modify-write: compare revisions, then write only if we are newer.
+      const read = await readStandardRow(cfg, account);
+      if (!read.ok) return 'failed';
+
+      if (!read.row) {
+        const res = await fetch(
+          `${cfg.url}/rest/v1/${STANDARD_TABLE}?on_conflict=account&columns=account,payload,updated_at`,
+          {
+            method: 'POST',
+            headers: headers(cfg, { Prefer: 'resolution=merge-duplicates,return=minimal' }),
+            body: JSON.stringify([{ account, payload, updated_at: stampIso }]),
+            signal: withTimeout(10000),
+          },
+        );
+        return res.ok ? 'written' : 'failed';
+      }
+
+      const remoteTs = read.row.updated_at ? new Date(read.row.updated_at).getTime() : 0;
+      if (remoteTs >= stamp) return 'stale';
+
+      // The `updated_at=lt.<stamp>` filter is applied to the UPDATE, so even if
+      // another device writes between our read and this PATCH we cannot
+      // clobber it: the row simply stops matching and nothing is changed.
       const res = await fetch(
-        `${cfg.url}/rest/v1/${STANDARD_TABLE}?on_conflict=account&columns=account,payload,updated_at`,
+        `${cfg.url}/rest/v1/${STANDARD_TABLE}?account=eq.${encodeURIComponent(account)}&updated_at=lt.${encodeURIComponent(stampIso)}`,
         {
-          method: 'POST',
-          headers: headers(cfg, { Prefer: 'resolution=merge-duplicates,return=minimal' }),
-          body: JSON.stringify([{ account, payload, updated_at: new Date().toISOString() }]),
+          method: 'PATCH',
+          headers: headers(cfg, { Prefer: 'return=minimal' }),
+          body: JSON.stringify({ payload, updated_at: stampIso }),
           signal: withTimeout(10000),
         },
       );
-      if (res.status === 404) return false;
-      return res.ok;
+      if (!res.ok) return 'failed';
+      return 'written';
     }
 
     // Custom shape.
@@ -264,8 +324,7 @@ export async function pushRemote(account: string, payload: unknown): Promise<boo
           signal: withTimeout(10000),
         },
       );
-      if (res.status === 404) return false;
-      return res.ok;
+      return res.ok ? 'written' : 'failed';
     }
 
     // Single-row table: PATCH the existing row (by id when available).
@@ -276,7 +335,7 @@ export async function pushRemote(account: string, payload: unknown): Promise<boo
       .then((r) => (r.ok ? (r.json() as Promise<Record<string, unknown>[]>) : null))
       .catch(() => null);
     const row = rows && rows.length > 0 ? rows[0] : null;
-    if (!row) return false;
+    if (!row) return 'failed';
     const filter = cfg.idCol ? `?${cfg.idCol}=eq.${encodeURIComponent(String(row[cfg.idCol]))}` : '';
     const res = await fetch(`${restUrl(cfg)}${filter}`, {
       method: 'PATCH',
@@ -284,9 +343,9 @@ export async function pushRemote(account: string, payload: unknown): Promise<boo
       body: JSON.stringify({ [cfg.payloadCol!]: payload }),
       signal: withTimeout(10000),
     });
-    return res.ok;
+    return res.ok ? 'written' : 'failed';
   } catch {
-    return false;
+    return 'failed';
   }
 }
 

@@ -206,7 +206,19 @@ let activeAccount = '';
 export const setActiveAccount = (account: string): void => {
   activeAccount = account.toLowerCase();
 };
-const storageKey = () => (activeAccount ? `${STORAGE_KEY}-${activeAccount}` : STORAGE_KEY);
+/**
+ * Local storage is namespaced per account (SITE / RESTA).
+ *
+ * `accountOverride` lets a caller read/write the right bucket BEFORE the
+ * module-level `activeAccount` has been set — on a cold start the app
+ * renders (and boots its state) before the parent effect that calls
+ * `setActiveAccount()` runs, which used to make a freshly opened phone load
+ * an empty/stale board and then trust it over the shared cloud row.
+ */
+const storageKey = (accountOverride?: string): string => {
+  const account = (accountOverride ?? activeAccount).toLowerCase();
+  return account ? `${STORAGE_KEY}-${account}` : STORAGE_KEY;
+};
 
 /** Merge defaults with any saved custom org so new built-in people always appear. */
 function mergeById<T extends { id: string }>(defaults: T[], custom?: T[] | null): T[] {
@@ -256,7 +268,7 @@ export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
   };
 }
 
-export function loadPersisted(): PersistedWalkin {
+export function loadPersisted(accountOverride?: string): PersistedWalkin {
   const fallback: PersistedWalkin = {
     salesState: defaultSalesState(),
     history: [],
@@ -270,7 +282,7 @@ export function loadPersisted(): PersistedWalkin {
     customSales: SALES,
   };
   try {
-    const raw = localStorage.getItem(storageKey());
+    const raw = localStorage.getItem(storageKey(accountOverride));
     if (!raw) return fallback;
     return hydrate(JSON.parse(raw) as Partial<PersistedWalkin>);
   } catch {
@@ -278,9 +290,9 @@ export function loadPersisted(): PersistedWalkin {
   }
 }
 
-export function savePersisted(p: PersistedWalkin): void {
+export function savePersisted(p: PersistedWalkin, accountOverride?: string): void {
   try {
-    localStorage.setItem(storageKey(), JSON.stringify(p));
+    localStorage.setItem(storageKey(accountOverride), JSON.stringify(p));
   } catch {
     /* storage full — ignore */
   }
