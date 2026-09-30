@@ -125,9 +125,9 @@ export const headMembers = (headId: string): SalesPerson[] =>
 
 // ───────────────────────── State helpers ─────────────────────────
 
-export const defaultSalesState = (): Record<string, SalesState> => {
+export const defaultSalesState = (salesList: SalesPerson[] = SALES): Record<string, SalesState> => {
   const map: Record<string, SalesState> = {};
-  SALES.forEach((s) => {
+  salesList.forEach((s) => {
     map[s.id] = { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, coverCount: 0, lastServedAt: null };
   });
   return map;
@@ -165,6 +165,14 @@ export interface CarryOver {
   headId: string;
   headName: string;
   fromDate: string;
+}
+
+/** Explicit workspace context: never infer rotation rules from the storage account. */
+export interface RotationOptions {
+  workspace?: string;
+  carryOver?: CarryOver | null;
+  /** RESTA-only exclusions, also applied to full-round predictions. */
+  skippedIds?: string[];
 }
 
 /** Compact action record so undo restores the exact queue position, even after reloads. */
@@ -300,7 +308,7 @@ export function savePersisted(p: PersistedWalkin, accountOverride?: string): voi
 
 // ───────────────────────── Rotation engine ─────────────────────────
 //
-// Rules (per operation):
+// Default / SITE rules (per operation); RESTA uses the fixed team cycle below:
 //  1. Alternation among Heads (2 or more heads in cycle).
 //  2. Inside Khaled: managers rotate Manager × Manager (Ahmed ⇄ Rewaida ⇄ Perry).
 //     Inside other heads: attendance priority only.
@@ -467,6 +475,80 @@ function toTurn(
   };
 }
 
+/** RESTA's cycle is independent of Head groups and check-in order between teams. */
+export const RESTA_TEAM_ORDER = [
+  { id: 'ahmed', name: 'Ahmed Yossry' },
+  { id: 'shehata', name: 'Youssef Shehata' },
+  { id: 'rewaida', name: 'Rewaida' },
+  { id: 'hala-elfar', name: 'Hala Elfar' },
+  { id: 'dina-abdo', name: 'Dina Abdo' },
+] as const;
+
+const isRestaRotation = (options: RotationOptions): boolean => options.workspace?.toUpperCase() === 'RESTA';
+const normalizeTeamName = (name: string): string => name.trim().toLowerCase().replace(/[\s_-]+/g, '');
+
+function restaTeamIndex(managerId: string, managerName: string): number {
+  const id = normalizeTeamName(managerId);
+  const name = normalizeTeamName(managerName);
+  return RESTA_TEAM_ORDER.findIndex((team) =>
+    id === normalizeTeamName(team.id) ||
+    id === normalizeTeamName(team.name) ||
+    name === normalizeTeamName(team.name),
+  );
+}
+
+function computeRestaTurn(
+  salesState: Record<string, SalesState>,
+  history: Assignment[],
+  excludeIds: string[],
+  headsList: HeadGroup[],
+  managersList: ManagerTeam[],
+  salesList: SalesPerson[],
+  carry: CarryOver | null | undefined,
+): ComputedTurn | null {
+  // Built-in IDs stay stable; custom Hala/Dina teams keep their saved IDs and
+  // are resolved by name (including case / spacing variants such as El Far).
+  // Missing teams occupy their original slot and are simply skipped.
+  const teams = RESTA_TEAM_ORDER.map((team, index) =>
+    managersList.find((m) => m.id === team.id) ??
+    managersList.find((m) => restaTeamIndex(m.id, m.name) === index),
+  );
+  const teamIndex = (managerId: string, managerName: string): number => {
+    const existing = teams.findIndex((m) => m?.id === managerId);
+    return existing >= 0 ? existing : restaTeamIndex(managerId, managerName);
+  };
+
+  let previousIndex = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    previousIndex = teamIndex(history[i].managerId, history[i].managerName);
+    if (previousIndex >= 0) break;
+  }
+  // The caller pins the carried person. If that person is skipped, the first
+  // automatic turn still follows their team (Rewaida → Hala, not Head × Head).
+  // A team-only carry cursor also survives a reset with no available person.
+  if (previousIndex < 0 && carry?.managerId) {
+    previousIndex = teamIndex(carry.managerId, carry.managerName);
+  }
+
+  const start = (previousIndex + 1) % RESTA_TEAM_ORDER.length;
+  for (let offset = 0; offset < RESTA_TEAM_ORDER.length; offset++) {
+    const team = teams[(start + offset) % RESTA_TEAM_ORDER.length];
+    if (!team) continue;
+    const candidates = candidatesOf(
+      salesList.filter((s) => s.managerId === team.id),
+      salesState,
+      excludeIds,
+    );
+    if (!candidates.length) continue;
+    // Fairness and attendance decide the member WITHIN this team only.
+    const reason = offset === 0
+      ? `تناوب فرق Resta • دور تيم ${team.name}`
+      : `تناوب فرق Resta • تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
+    return toTurn(candidates[0].sales, reason, offset > 0, headsList, managersList);
+  }
+  return null;
+}
+
 export function computeNextTurn(
   salesState: Record<string, SalesState>,
   history: Assignment[],
@@ -475,7 +557,20 @@ export function computeNextTurn(
   headsList: HeadGroup[] = HEADS,
   managersList: ManagerTeam[] = MANAGERS,
   salesList: SalesPerson[] = SALES,
+  options: RotationOptions = {},
 ): ComputedTurn | null {
+  if (isRestaRotation(options)) {
+    return computeRestaTurn(
+      salesState,
+      history,
+      [...excludeIds, ...(options.skippedIds ?? [])],
+      headsList,
+      managersList,
+      salesList,
+      options.carryOver,
+    );
+  }
+
   const anyAvailable = salesList.some(
     (s) => !s.isManager && salesState[s.id]?.status === 'available' && !excludeIds.includes(s.id),
   );
@@ -539,8 +634,8 @@ export function computeNextTurn(
 }
 
 /**
- * Full round for today: every available rotation member appears once,
- * in strict Head × Head order by attendance priority. The seed turn
+ * Full round for today: every eligible, available rotation member appears once,
+ * in the workspace's rotation order (default: Head × Head). The seed turn
  * (e.g. yesterday's carry-over, even if still absent) is pinned first and
  * never repeated later in the list.
  */
@@ -552,10 +647,11 @@ export function predictFullRound(
   headsList: HeadGroup[] = HEADS,
   managersList: ManagerTeam[] = MANAGERS,
   salesList: SalesPerson[] = SALES,
+  options: RotationOptions = {},
 ): ComputedTurn[] {
   const out: ComputedTurn[] = [];
   const simHistory: Assignment[] = [...history];
-  const served = new Set<string>();
+  const served = new Set<string>(isRestaRotation(options) ? (options.skippedIds ?? []) : []);
 
   const push = (t: ComputedTurn, id: string) => {
     out.push(t);
@@ -579,7 +675,7 @@ export function predictFullRound(
 
   const total = salesList.filter((s) => !s.isManager && salesState[s.id]?.status === 'available').length;
   for (let i = 0; i < total + 1 && out.length < total + (seedTurn ? 1 : 0); i++) {
-    const t = computeNextTurn(salesState, simHistory, startingHead, [...served], headsList, managersList, salesList);
+    const t = computeNextTurn(salesState, simHistory, startingHead, [...served], headsList, managersList, salesList, options);
     if (!t) break;
     push(t, `round-${i}`);
   }

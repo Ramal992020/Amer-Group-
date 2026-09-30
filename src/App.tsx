@@ -33,6 +33,7 @@ import {
   SALES as DEFAULT_SALES,
   computeNextTurn,
   predictFullRound,
+  RESTA_TEAM_ORDER,
   carryOverTurn,
   reconcileCounts,
   defaultSalesState,
@@ -230,6 +231,7 @@ function WalkInApp({
   onSwitchWorkspace: () => void;
 }) {
   const toast = useToast();
+  const isResta = account.toUpperCase() === 'RESTA';
   const [boot] = useState(() => {
     // Scope local storage to this account BEFORE reading it: the parent effect
     // that calls setActiveAccount() has not run yet on a cold start.
@@ -644,8 +646,12 @@ function WalkInApp({
   };
 
   // ── Rotation ──
+  const rotationOptions = useMemo(
+    () => ({ workspace: account, carryOver, skippedIds }),
+    [account, carryOver, skippedIds],
+  );
   const effectiveStartingHead = useMemo(() => {
-    if (history.length === 0 && carryOver?.headId) {
+    if (!isResta && history.length === 0 && carryOver?.headId) {
       // After yesterday's pinned person (skipped), the queue continues on the
       // OPPOSITE side: Kaled's team ⇄ Wael / Mohamed Samir's teams.
       return carryOver.headId === 'khaled'
@@ -653,7 +659,7 @@ function WalkInApp({
         : 'khaled';
     }
     return startingHead;
-  }, [history.length, carryOver, heads, startingHead]);
+  }, [isResta, history.length, carryOver, heads, startingHead]);
 
   // Yesterday's pending person is ALWAYS pinned first in the new day — even if
   // still absent. A substitute is picked manually (بديل من نفس التيم) when needed.
@@ -669,14 +675,14 @@ function WalkInApp({
   const next: ComputedTurn | null = useMemo(() => {
     if (paused) return null;
     if (pinned) return pinned;
-    return computeNextTurn(salesState, history, effectiveStartingHead, skippedIds, heads, managers, sales);
-  }, [paused, pinned, salesState, history, effectiveStartingHead, skippedIds, heads, managers, sales]);
+    return computeNextTurn(salesState, history, effectiveStartingHead, skippedIds, heads, managers, sales, rotationOptions);
+  }, [paused, pinned, salesState, history, effectiveStartingHead, skippedIds, heads, managers, sales, rotationOptions]);
 
   const nextIsPresent = !!next && salesState[next.salesId]?.status === 'available';
 
   const computedRound = useMemo(
-    () => (paused ? [] : predictFullRound(salesState, history, effectiveStartingHead, next, heads, managers, sales)),
-    [salesState, history, effectiveStartingHead, next, paused, heads, managers, sales],
+    () => (paused ? [] : predictFullRound(salesState, history, effectiveStartingHead, next, heads, managers, sales, rotationOptions)),
+    [salesState, history, effectiveStartingHead, next, paused, heads, managers, sales, rotationOptions],
   );
 
   const fullRound = useMemo(() => {
@@ -870,7 +876,10 @@ function WalkInApp({
         lastServedAt: new Date().toISOString(),
       },
     };
-    const nextAfter = computeNextTurn(newSalesState, newHistory, effectiveStartingHead, [], heads, managers, sales);
+    const nextAfter = computeNextTurn(newSalesState, newHistory, effectiveStartingHead, [], heads, managers, sales, {
+      ...rotationOptions,
+      skippedIds: [], // Confirming a turn clears the skip list below.
+    });
     setSeq(n);
     setHistory(newHistory);
     setSalesState(newSalesState);
@@ -951,20 +960,25 @@ function WalkInApp({
         fromDate: new Date().toISOString(),
       });
     } else if (history.length > 0) {
-      const lastHead = history[history.length - 1].headId;
+      const lastAssignment = history[history.length - 1];
+      const lastHead = lastAssignment.headId;
       const nextIdx = (heads.findIndex((h) => h.id === lastHead) + 1) % heads.length;
       const nextHeadObj = heads[nextIdx] || heads[0];
       setCarryOver({
         salesId: '',
         salesName: '',
-        managerId: '',
-        managerName: '',
-        headId: nextHeadObj?.id || 'khaled',
-        headName: nextHeadObj?.name || 'Khaled Youssef',
+        // RESTA continues after the last team even if there is no pending
+        // person. SITE retains its existing next-Head reset behavior.
+        managerId: isResta ? lastAssignment.managerId : '',
+        managerName: isResta ? lastAssignment.managerName : '',
+        headId: isResta ? lastAssignment.headId : (nextHeadObj?.id || 'khaled'),
+        headName: isResta ? lastAssignment.headName : (nextHeadObj?.name || 'Khaled Youssef'),
         fromDate: new Date().toISOString(),
       });
     }
-    setSalesState(defaultSalesState());
+    // Hala/Dina may be custom teams: keep their members in RESTA's fresh
+    // attendance map so they can check in normally on the new day.
+    setSalesState(isResta ? defaultSalesState(sales) : defaultSalesState());
     setHistory([]);
     setCounter(0);
     setSeq(0);
@@ -1092,7 +1106,9 @@ function WalkInApp({
                   <h1 className="truncate font-display text-[19px] font-black leading-tight text-ink-900 sm:text-[22px]">
                     {TITLES[tab].title}
                   </h1>
-                  <p className="hidden truncate text-[12px] font-medium text-ink-400 sm:block">{TITLES[tab].sub}</p>
+                  <p className="hidden truncate text-[12px] font-medium text-ink-400 sm:block">
+                    {tab === 'order' && isResta ? 'التناوب بترتيب فرق Resta الثابت' : TITLES[tab].sub}
+                  </p>
                 </div>
               </div>
 
@@ -1535,26 +1551,33 @@ function WalkInApp({
 
                 <section className="surface anim-fade-up p-4" style={{ animationDelay: '0.08s' }}>
                   <SectionTitle
-                    title="بداية تناوب اليوم"
-                    subtitle="اختر الـ Head الذي يبدأ به الدور"
+                    title={isResta ? 'دورة فرق Resta' : 'بداية تناوب اليوم'}
+                    subtitle={isResta ? 'ترتيب ثابت مع تخطي الفرق غير المتاحة' : 'اختر الـ Head الذي يبدأ به الدور'}
                     icon={<Crown className="size-4.5" strokeWidth={2.1} />}
                   />
-                  <div className="grid grid-cols-2 gap-2">
-                    {heads.map((h) => (
-                      <button
-                        key={h.id}
-                        onClick={() => setStartingHead(h.id)}
-                        className={cn(
-                          'rounded-xl border-2 px-3 py-3 text-[13px] font-extrabold transition',
-                          effectiveStartingHead === h.id
-                            ? 'border-brand-600 bg-brand-50 text-brand-700'
-                            : 'border-ink-100 bg-white text-ink-700 hover:border-ink-200',
-                        )}
-                      >
-                        {h.name}
-                      </button>
-                    ))}
-                  </div>
+                  {isResta ? (
+                    <div className="space-y-2 rounded-xl bg-ink-50 p-3 text-[12px] font-semibold leading-relaxed text-ink-500">
+                      <p dir="ltr">{RESTA_TEAM_ORDER.map((team) => team.name).join(' → ')} → …</p>
+                      <p>الدور المرحّل يبدأ أولاً، ثم تستمر الدورة من الفريق التالي. أي فريق دون سيلز متاح يُتخطّى دون تغيير ترتيب باقي الفرق.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {heads.map((h) => (
+                        <button
+                          key={h.id}
+                          onClick={() => setStartingHead(h.id)}
+                          className={cn(
+                            'rounded-xl border-2 px-3 py-3 text-[13px] font-extrabold transition',
+                            effectiveStartingHead === h.id
+                              ? 'border-brand-600 bg-brand-50 text-brand-700'
+                              : 'border-ink-100 bg-white text-ink-700 hover:border-ink-200',
+                          )}
+                        >
+                          {h.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </section>
               </div>
             )}
