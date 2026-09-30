@@ -658,8 +658,11 @@ function WalkInApp({
   // Yesterday's pending person is ALWAYS pinned first in the new day — even if
   // still absent. A substitute is picked manually (بديل من نفس التيم) when needed.
   const pinned: ComputedTurn | null = useMemo(() => {
-    if (paused || history.length > 0 || !carryOver) return null;
-    if (carryOver.salesId && skippedIds.includes(carryOver.salesId)) return null;
+    if (paused || !carryOver?.salesId) return null;
+    if (skippedIds.includes(carryOver.salesId)) return null;
+    const present = salesState[carryOver.salesId]?.status === 'available';
+    // غائب واليوم بدأ فعلاً → الطابور يكمل؛ يرجع #1 تلقائياً فور تسجيل حضوره
+    if (!present && history.length > 0) return null;
     return carryOverTurn(carryOver, salesState, heads, managers, sales);
   }, [paused, history.length, carryOver, skippedIds, salesState, heads, managers, sales]);
 
@@ -879,7 +882,10 @@ function WalkInApp({
         ? prev.filter((id) => id !== (substituted ? next?.salesId : salesId))
         : prev,
     );
-    if (history.length === 0) setCarryOver(null);
+    // الدور المرحَّل يُستهلك فقط عند خدمة صاحبه — مباشرة أو ببديل من نفس التيم
+    if (carryOver?.salesId && (salesId === carryOver.salesId || (substituted && next?.salesId === carryOver.salesId))) {
+      setCarryOver(null);
+    }
     setAssignOpen(false);
     setDoneInfo({ assignment, next: nextAfter });
   };
@@ -929,9 +935,11 @@ function WalkInApp({
 
   const resetDay = () => {
     if (!window.confirm('بدء يوم جديد؟ سيتم مسح الحضور والسجل وترحيل الدور المتبقي.')) return;
-    const pending = paused
-      ? null
-      : computeNextTurn(salesState, history, effectiveStartingHead, skippedIds, heads, managers, sales);
+    // المعروض في «الدور الحالي» هو #1 بكرة — next يشمل المثبَّت الغائب فلا يضيع دوره
+    let pending = paused ? null : next;
+    if (!pending && !paused && carryOver?.salesId && !skippedIds.includes(carryOver.salesId)) {
+      pending = carryOverTurn(carryOver, salesState, heads, managers, sales);
+    }
     if (pending) {
       setCarryOver({
         salesId: pending.salesId,
