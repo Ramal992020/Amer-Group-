@@ -33,10 +33,12 @@ import {
   SALES as DEFAULT_SALES,
   computeNextTurn,
   predictFullRound,
-  RESTA_TEAM_ORDER,
+  AUTOMATIC_TEAM_ORDER,
+  usesFixedTeamRotation,
+  carryOverForNewDay,
+  createNewDaySalesState,
   carryOverTurn,
   reconcileCounts,
-  defaultSalesState,
   loadPersisted,
   savePersisted,
   hydrate,
@@ -231,7 +233,7 @@ function WalkInApp({
   onSwitchWorkspace: () => void;
 }) {
   const toast = useToast();
-  const isResta = account.toUpperCase() === 'RESTA';
+  const isFixedTeamWorkspace = usesFixedTeamRotation(account);
   const [boot] = useState(() => {
     // Scope local storage to this account BEFORE reading it: the parent effect
     // that calls setActiveAccount() has not run yet on a cold start.
@@ -651,7 +653,7 @@ function WalkInApp({
     [account, carryOver, skippedIds],
   );
   const effectiveStartingHead = useMemo(() => {
-    if (!isResta && history.length === 0 && carryOver?.headId) {
+    if (!isFixedTeamWorkspace && history.length === 0 && carryOver?.headId) {
       // After yesterday's pinned person (skipped), the queue continues on the
       // OPPOSITE side: Kaled's team ⇄ Wael / Mohamed Samir's teams.
       return carryOver.headId === 'khaled'
@@ -659,7 +661,7 @@ function WalkInApp({
         : 'khaled';
     }
     return startingHead;
-  }, [isResta, history.length, carryOver, heads, startingHead]);
+  }, [isFixedTeamWorkspace, history.length, carryOver, heads, startingHead]);
 
   // Yesterday's pending person is ALWAYS pinned first in the new day — even if
   // still absent. A substitute is picked manually (بديل من نفس التيم) when needed.
@@ -944,41 +946,13 @@ function WalkInApp({
 
   const resetDay = () => {
     if (!window.confirm('بدء يوم جديد؟ سيتم مسح الحضور والسجل وترحيل الدور المتبقي.')) return;
-    // المعروض في «الدور الحالي» هو #1 بكرة — next يشمل المثبَّت الغائب فلا يضيع دوره
-    let pending = paused ? null : next;
-    if (!pending && !paused && carryOver?.salesId && !skippedIds.includes(carryOver.salesId)) {
-      pending = carryOverTurn(carryOver, salesState, heads, managers, sales);
-    }
-    if (pending) {
-      setCarryOver({
-        salesId: pending.salesId,
-        salesName: pending.salesName,
-        managerId: pending.managerId,
-        managerName: pending.managerName,
-        headId: pending.headId,
-        headName: pending.headName,
-        fromDate: new Date().toISOString(),
-      });
-    } else if (history.length > 0) {
-      const lastAssignment = history[history.length - 1];
-      const lastHead = lastAssignment.headId;
-      const nextIdx = (heads.findIndex((h) => h.id === lastHead) + 1) % heads.length;
-      const nextHeadObj = heads[nextIdx] || heads[0];
-      setCarryOver({
-        salesId: '',
-        salesName: '',
-        // RESTA continues after the last team even if there is no pending
-        // person. SITE retains its existing next-Head reset behavior.
-        managerId: isResta ? lastAssignment.managerId : '',
-        managerName: isResta ? lastAssignment.managerName : '',
-        headId: isResta ? lastAssignment.headId : (nextHeadObj?.id || 'khaled'),
-        headName: isResta ? lastAssignment.headName : (nextHeadObj?.name || 'Khaled Youssef'),
-        fromDate: new Date().toISOString(),
-      });
-    }
-    // Hala/Dina may be custom teams: keep their members in RESTA's fresh
-    // attendance map so they can check in normally on the new day.
-    setSalesState(isResta ? defaultSalesState(sales) : defaultSalesState());
+    // Keep an unserved carried person even if an unrelated turn was assigned,
+    // skipped, paused, or the person is still absent. Otherwise carry tomorrow's
+    // current pending turn (or a team-only cycle cursor when nobody is available).
+    const pending = paused ? null : next;
+    setCarryOver(carryOverForNewDay(carryOver, pending, history, heads, account));
+    // Keep saved custom-team members in both RESTA and SITE's fresh attendance map.
+    setSalesState(createNewDaySalesState(account, sales));
     setHistory([]);
     setCounter(0);
     setSeq(0);
@@ -1107,7 +1081,7 @@ function WalkInApp({
                     {TITLES[tab].title}
                   </h1>
                   <p className="hidden truncate text-[12px] font-medium text-ink-400 sm:block">
-                    {tab === 'order' && isResta ? 'التناوب بترتيب فرق Resta الثابت' : TITLES[tab].sub}
+                    {tab === 'order' && isFixedTeamWorkspace ? 'التناوب بترتيب الفرق الثابت في RESTA وSITE' : TITLES[tab].sub}
                   </p>
                 </div>
               </div>
@@ -1551,14 +1525,14 @@ function WalkInApp({
 
                 <section className="surface anim-fade-up p-4" style={{ animationDelay: '0.08s' }}>
                   <SectionTitle
-                    title={isResta ? 'دورة فرق Resta' : 'بداية تناوب اليوم'}
-                    subtitle={isResta ? 'ترتيب ثابت مع تخطي الفرق غير المتاحة' : 'اختر الـ Head الذي يبدأ به الدور'}
+                    title={isFixedTeamWorkspace ? 'دورة الفرق التلقائية' : 'بداية تناوب اليوم'}
+                    subtitle={isFixedTeamWorkspace ? 'ترتيب ثابت مع تخطي الفرق غير المتاحة' : 'اختر الـ Head الذي يبدأ به الدور'}
                     icon={<Crown className="size-4.5" strokeWidth={2.1} />}
                   />
-                  {isResta ? (
+                  {isFixedTeamWorkspace ? (
                     <div className="space-y-2 rounded-xl bg-ink-50 p-3 text-[12px] font-semibold leading-relaxed text-ink-500">
-                      <p dir="ltr">{RESTA_TEAM_ORDER.map((team) => team.name).join(' → ')} → …</p>
-                      <p>الدور المرحّل يبدأ أولاً، ثم تستمر الدورة من الفريق التالي. أي فريق دون سيلز متاح يُتخطّى دون تغيير ترتيب باقي الفرق.</p>
+                      <p dir="ltr">{AUTOMATIC_TEAM_ORDER.map((team) => team.name).join(' → ')} → …</p>
+                      <p>هذا ترتيب تلقائي ثابت في RESTA وSITE. الدور المرحّل يبدأ أولاً، ثم تستمر الدورة من الفريق التالي. أي فريق دون سيلز متاح يُتخطّى دون تغيير ترتيب باقي الفرق.</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">

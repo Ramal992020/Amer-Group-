@@ -171,7 +171,7 @@ export interface CarryOver {
 export interface RotationOptions {
   workspace?: string;
   carryOver?: CarryOver | null;
-  /** RESTA-only exclusions, also applied to full-round predictions. */
+  /** Explicitly skipped sales IDs for either fixed-team workspace. */
   skippedIds?: string[];
 }
 
@@ -308,13 +308,12 @@ export function savePersisted(p: PersistedWalkin, accountOverride?: string): voi
 
 // ───────────────────────── Rotation engine ─────────────────────────
 //
-// Default / SITE rules (per operation); RESTA uses the fixed team cycle below:
-//  1. Alternation among Heads (2 or more heads in cycle).
-//  2. Inside Khaled: managers rotate Manager × Manager (Ahmed ⇄ Rewaida ⇄ Perry).
-//     Inside other heads: attendance priority only.
-//  3. Someone who already served today goes to the back of their Head's line.
-//  4. Yesterday's pending person is pinned first (handled by the caller). If they
-//     are still absent, a present teammate may temporarily take their place.
+// RESTA and SITE use one fixed team cycle, independent of Heads and attendance
+// order between teams. Other (unspecified) workspaces retain the original rules:
+//  1. Alternate Khaled's side with the other Heads; use attendance within a side.
+//  2. A served team/person falls behind in its existing fairness ordering.
+//  3. Yesterday's pending person is pinned first (handled by the caller); if absent,
+//     a same-team replacement or an explicit skip follows the existing behavior.
 
 /** Khaled's side ⇄ the other Heads' side (Wael + Mohamed Samir). */
 const sideOf = (headId: string): 'khaled' | 'other' => (headId === 'khaled' ? 'khaled' : 'other');
@@ -475,29 +474,47 @@ function toTurn(
   };
 }
 
-/** RESTA's cycle is independent of Head groups and check-in order between teams. */
-export const RESTA_TEAM_ORDER = [
+/** One fixed automatic team cycle shared by RESTA and SITE. */
+export const AUTOMATIC_TEAM_ORDER = [
   { id: 'ahmed', name: 'Ahmed Yossry' },
-  { id: 'shehata', name: 'Youssef Shehata' },
   { id: 'rewaida', name: 'Rewaida' },
+  { id: 'shehata', name: 'Youssef Shehata' },
   { id: 'hala-elfar', name: 'Hala Elfar' },
   { id: 'dina-abdo', name: 'Dina Abdo' },
 ] as const;
 
-const isRestaRotation = (options: RotationOptions): boolean => options.workspace?.toUpperCase() === 'RESTA';
+export function usesFixedTeamRotation(workspace?: string): boolean {
+  const normalized = workspace?.trim().toUpperCase();
+  return normalized === 'RESTA' || normalized === 'SITE';
+}
+
+/** Reset daily attendance without dropping saved custom-team members in SITE/RESTA. */
+export function createNewDaySalesState(
+  workspace?: string,
+  salesList: SalesPerson[] = SALES,
+): Record<string, SalesState> {
+  return defaultSalesState(usesFixedTeamRotation(workspace) ? salesList : SALES);
+}
+
 const normalizeTeamName = (name: string): string => name.trim().toLowerCase().replace(/[\s_-]+/g, '');
 
-function restaTeamIndex(managerId: string, managerName: string): number {
+function automaticTeamIndex(managerId: string, managerName: string): number {
   const id = normalizeTeamName(managerId);
   const name = normalizeTeamName(managerName);
-  return RESTA_TEAM_ORDER.findIndex((team) =>
+  return AUTOMATIC_TEAM_ORDER.findIndex((team) =>
     id === normalizeTeamName(team.id) ||
     id === normalizeTeamName(team.name) ||
     name === normalizeTeamName(team.name),
   );
 }
 
-function computeRestaTurn(
+/**
+ * Start at the team following today's most recently served team. When there is
+ * no history, a carried turn's team supplies the cursor; the caller separately
+ * pins that person at the front. Custom team IDs are preserved and resolved by
+ * the saved team name, while a missing team simply has no candidates in its slot.
+ */
+function computeFixedTeamTurn(
   salesState: Record<string, SalesState>,
   history: Assignment[],
   excludeIds: string[],
@@ -506,16 +523,13 @@ function computeRestaTurn(
   salesList: SalesPerson[],
   carry: CarryOver | null | undefined,
 ): ComputedTurn | null {
-  // Built-in IDs stay stable; custom Hala/Dina teams keep their saved IDs and
-  // are resolved by name (including case / spacing variants such as El Far).
-  // Missing teams occupy their original slot and are simply skipped.
-  const teams = RESTA_TEAM_ORDER.map((team, index) =>
+  const teams = AUTOMATIC_TEAM_ORDER.map((team, index) =>
     managersList.find((m) => m.id === team.id) ??
-    managersList.find((m) => restaTeamIndex(m.id, m.name) === index),
+    managersList.find((m) => automaticTeamIndex(m.id, m.name) === index),
   );
   const teamIndex = (managerId: string, managerName: string): number => {
     const existing = teams.findIndex((m) => m?.id === managerId);
-    return existing >= 0 ? existing : restaTeamIndex(managerId, managerName);
+    return existing >= 0 ? existing : automaticTeamIndex(managerId, managerName);
   };
 
   let previousIndex = -1;
@@ -523,16 +537,15 @@ function computeRestaTurn(
     previousIndex = teamIndex(history[i].managerId, history[i].managerName);
     if (previousIndex >= 0) break;
   }
-  // The caller pins the carried person. If that person is skipped, the first
-  // automatic turn still follows their team (Rewaida → Hala, not Head × Head).
-  // A team-only carry cursor also survives a reset with no available person.
-  if (previousIndex < 0 && carry?.managerId) {
+  // An unserved carry-over is pinned by the caller. If it is explicitly skipped,
+  // or no person is available yet, continue after its team without losing the pin.
+  if (previousIndex < 0 && carry && (carry.managerId || carry.managerName)) {
     previousIndex = teamIndex(carry.managerId, carry.managerName);
   }
 
-  const start = (previousIndex + 1) % RESTA_TEAM_ORDER.length;
-  for (let offset = 0; offset < RESTA_TEAM_ORDER.length; offset++) {
-    const team = teams[(start + offset) % RESTA_TEAM_ORDER.length];
+  const start = (previousIndex + 1) % AUTOMATIC_TEAM_ORDER.length;
+  for (let offset = 0; offset < AUTOMATIC_TEAM_ORDER.length; offset++) {
+    const team = teams[(start + offset) % AUTOMATIC_TEAM_ORDER.length];
     if (!team) continue;
     const candidates = candidatesOf(
       salesList.filter((s) => s.managerId === team.id),
@@ -542,8 +555,8 @@ function computeRestaTurn(
     if (!candidates.length) continue;
     // Fairness and attendance decide the member WITHIN this team only.
     const reason = offset === 0
-      ? `تناوب فرق Resta • دور تيم ${team.name}`
-      : `تناوب فرق Resta • تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
+      ? `تناوب الفرق • دور تيم ${team.name}`
+      : `تناوب الفرق • تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
     return toTurn(candidates[0].sales, reason, offset > 0, headsList, managersList);
   }
   return null;
@@ -559,8 +572,8 @@ export function computeNextTurn(
   salesList: SalesPerson[] = SALES,
   options: RotationOptions = {},
 ): ComputedTurn | null {
-  if (isRestaRotation(options)) {
-    return computeRestaTurn(
+  if (usesFixedTeamRotation(options.workspace)) {
+    return computeFixedTeamTurn(
       salesState,
       history,
       [...excludeIds, ...(options.skippedIds ?? [])],
@@ -635,9 +648,9 @@ export function computeNextTurn(
 
 /**
  * Full round for today: every eligible, available rotation member appears once,
- * in the workspace's rotation order (default: Head × Head). The seed turn
- * (e.g. yesterday's carry-over, even if still absent) is pinned first and
- * never repeated later in the list.
+ * in the workspace's rotation order (fixed team cycle for RESTA/SITE; Head × Head
+ * otherwise). The seed turn (e.g. yesterday's carry-over, even if still absent)
+ * is pinned first and never repeated later in the list.
  */
 export function predictFullRound(
   salesState: Record<string, SalesState>,
@@ -651,7 +664,7 @@ export function predictFullRound(
 ): ComputedTurn[] {
   const out: ComputedTurn[] = [];
   const simHistory: Assignment[] = [...history];
-  const served = new Set<string>(isRestaRotation(options) ? (options.skippedIds ?? []) : []);
+  const served = new Set<string>(usesFixedTeamRotation(options.workspace) ? (options.skippedIds ?? []) : []);
 
   const push = (t: ComputedTurn, id: string) => {
     out.push(t);
@@ -707,6 +720,65 @@ export function carryOverTurn(
     headsList,
     managersList,
   );
+}
+
+/**
+ * Choose the role to carry into a new day. An outstanding person-level carry
+ * survives unrelated assignments, skips, reloads and an absence; it is cleared
+ * only by the assignment handler when that person (or a same-team substitute)
+ * actually uses the slot. Otherwise pin the current pending turn. With no
+ * eligible person, retain a team-only cursor so the fixed cycle resumes safely.
+ */
+export function carryOverForNewDay(
+  currentCarry: CarryOver | null,
+  pendingTurn: ComputedTurn | null,
+  history: Assignment[],
+  headsList: HeadGroup[],
+  workspace?: string,
+  fromDate = new Date().toISOString(),
+): CarryOver | null {
+  if (currentCarry?.salesId) return currentCarry;
+
+  if (pendingTurn) {
+    return {
+      salesId: pendingTurn.salesId,
+      salesName: pendingTurn.salesName,
+      managerId: pendingTurn.managerId,
+      managerName: pendingTurn.managerName,
+      headId: pendingTurn.headId,
+      headName: pendingTurn.headName,
+      fromDate,
+    };
+  }
+
+  const lastAssignment = history[history.length - 1];
+  if (!lastAssignment) return currentCarry;
+
+  if (usesFixedTeamRotation(workspace)) {
+    return {
+      salesId: '',
+      salesName: '',
+      managerId: lastAssignment.managerId,
+      managerName: lastAssignment.managerName,
+      headId: lastAssignment.headId,
+      headName: lastAssignment.headName,
+      fromDate,
+    };
+  }
+
+  const lastHeadIndex = headsList.findIndex((head) => head.id === lastAssignment.headId);
+  const nextHead = headsList.length > 0
+    ? headsList[(lastHeadIndex + 1 + headsList.length) % headsList.length]
+    : undefined;
+  return {
+    salesId: '',
+    salesName: '',
+    managerId: '',
+    managerName: '',
+    headId: nextHead?.id ?? 'khaled',
+    headName: nextHead?.name ?? 'Khaled Youssef',
+    fromDate,
+  };
 }
 
 // ───────────────────────── Formatting ─────────────────────────

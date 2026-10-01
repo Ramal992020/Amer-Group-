@@ -71,7 +71,7 @@ export function CurrentTurn({
         </span>
         <h2 className="mt-4 font-display text-[17px] font-extrabold text-ink-900">لا يوجد سيلز متاح حالياً</h2>
         <p className="mx-auto mt-2 max-w-xs text-[13px] leading-relaxed text-ink-400">
-          سجّل حضور السيلز من شاشة اليوم، وسيظهر الدور التالي تلقائياً بنظام Head × Head.
+          سجّل حضور السيلز من شاشة اليوم، وسيظهر الدور التالي تلقائياً حسب دورة الترتيب.
         </p>
       </div>
     );
