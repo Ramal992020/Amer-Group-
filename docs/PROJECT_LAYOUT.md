@@ -35,6 +35,8 @@ grep -o "visibilitychange" dist/index.html          # sync foreground listener
 grep -o "updated_at=lt\." dist/index.html           # revision-guarded PATCH
 grep -o "return=representation" dist/index.html     # PATCH result is verified
 grep -o "postgres_changes" dist/index.html          # Realtime subscription
+grep -o "الفرع الآخر" dist/index.html                # shared roster (org) sync
+grep -o "يظهر في الفرعين SITE و RESTA" dist/index.html # «إضافة عضو جديد» subtitle
 grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1/ root
                                                     # check is what killed sync
 ```
@@ -59,6 +61,56 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
   `(shiftted)` line any more — the substitute concept is gone from the flow.
 * A carry-over is consumed when its team is served (`managerId` match in
   `confirmWith`), so a served team is never pinned again.
+
+## One roster for both branches — SITE ⇄ RESTA
+
+The org chart (Heads + manager teams + sales roster) is **shared by the two
+branches**, while attendance, history, carry-over and the manual order stay
+**per branch**. A manager/Head/sales added or renamed in SITE must therefore
+show up in RESTA (and the other way round) without either branch losing a day:
+
+* The roster is published to its own row in the same table:
+  `walkin_state.account = 'ORG'` (`SHARED_ORG_ACCOUNT` in `src/lib/sync.ts`).
+  The two per-branch rows (`SITE`, `RESTA`) keep only their own day.
+* `hydrateOrgChart` / `OrgChart` (`src/lib/walkin.ts`) is the normal form of
+  that row; `applyOrgChart` (`src/lib/org.ts`) merges it into a branch:
+  renames run through the rename helpers first (so this branch's `history`,
+  `carryOver` and receipts print the new name), then the chart's lists become
+  the roster. **Ids never change**, so attendance, counters and the fixed team
+  cycle keep pointing at the same people. A member added elsewhere simply
+  starts as «لم يحضر» here.
+* `orgRevision` (in the branch payload, `PersistedWalkin.orgRevision`) is the
+  revision of the shared chart a device already has. A branch row whose roster
+  is older than that is **not** allowed to overwrite the local one — the row is
+  marked dirty and republished with today's roster instead. Without this, a
+  stale attendance push from one device could silently undo a rename made in
+  the other branch.
+* `mirrorOrgChart` copies the roster into the *other* branch's local bucket on
+  the same device, so switching branch shows the new names instantly (and even
+  offline). It never downgrades a bucket that already holds a fresher chart.
+* **Renames and deletions of built-ins must survive hydration.** `mergeById`
+  lets the SAVED copy win for the same id — otherwise every rename of a
+  built-in person reverted on the next reload / cloud round-trip — and
+  `removedIds` (also part of the shared chart) keeps a deleted member from
+  coming back from the built-in defaults. New built-ins added in code are still
+  appended.
+* Sync cadence: the roster row is polled every 20s (60s when hidden) instead of
+  every 4s, plus Realtime (`walkin_state` `account=eq.ORG`) and a pull when the
+  app returns to the foreground. `reconcileSharedOrg()` runs on every connect:
+  pending local edit → push, otherwise the fresher chart wins. When the row is
+  missing (first run after this feature) it is seeded from **both** branches —
+  `mergeOrgCharts` unions the two rosters so a member that only exists in one
+  of them is not dropped.
+
+## «الهيكل» tab order
+
+Top → bottom, and it is deliberate:
+
+1. **إضافة عضو جديد** (`AddMemberPanel`) — first card.
+2. **الهيكل الحالي** (`ManageOrgPanel`) — rename/delete in place.
+3. النسخ الاحتياطي والاستعادة (`BackupPanel`) then المزامنة بين الأجهزة
+   (`SyncCard`) under a small divider — the maintenance cards belong at the
+   bottom of the tab, not above the daily work.
 
 ## Renaming members — edit in place, never delete + re-add
 

@@ -14,7 +14,7 @@
 // the old name (the member record, the team record for a manager, the history
 // entries, yesterday's carried-over team) is updated to the new name.
 
-import type { Assignment, CarryOver, HeadGroup, ManagerTeam, SalesPerson } from './walkin';
+import type { Assignment, CarryOver, HeadGroup, ManagerTeam, OrgChart, SalesPerson } from './walkin';
 
 export interface OrgState {
   heads: HeadGroup[];
@@ -23,6 +23,8 @@ export interface OrgState {
   history: Assignment[];
   /** Yesterday's carried team — it stores its own copies of the names. */
   carryOver: CarryOver | null;
+  /** Ids the user deleted — optional so callers that only rename can omit it. */
+  removedIds?: string[];
 }
 
 /** A manager's own attendance row is stored as `${managerId}-self`. */
@@ -124,6 +126,54 @@ export function renameManager(org: OrgState, managerId: string, name: string, ar
       salesIds: selfIds,
       salesName: nextName,
     }),
+  };
+}
+
+/**
+ * Adopt a SHARED org chart (the same roster in SITE and RESTA) into one branch.
+ *
+ * The chart is authoritative for the roster, but applying it must not damage
+ * the branch's own data:
+ *   • every name that differs is applied through the rename helpers first, so
+ *     this branch's history, its carry-over and every already-served turn show
+ *     the new name (they store copies of names, they are not joined by id);
+ *   • attendance (`salesState`) and history are only touched by those renames —
+ *     a member added in the other branch keeps sitting as «absent» here;
+ *   • ids are stable, so the fixed team cycle keeps the same slots and nothing
+ *     about the queue changes.
+ */
+export function applyOrgChart(org: OrgState, chart: OrgChart): OrgState {
+  let next: OrgState = org;
+
+  chart.heads.forEach((head) => {
+    const current = next.heads.find((h) => h.id === head.id);
+    if (current && (current.name !== head.name || current.ar !== head.ar)) {
+      next = renameHead(next, head.id, head.name, head.ar);
+    }
+  });
+
+  chart.managers.forEach((team) => {
+    const current = next.managers.find((m) => m.id === team.id);
+    if (current && (current.name !== team.name || current.ar !== team.ar)) {
+      next = renameManager(next, team.id, team.name, team.ar);
+    }
+  });
+
+  chart.sales.forEach((person) => {
+    // A manager's own attendance row follows `renameManager` above.
+    if (person.isManager) return;
+    const current = next.sales.find((s) => s.id === person.id);
+    if (current && current.name !== person.name) {
+      next = renameSalesPerson(next, person.id, person.name);
+    }
+  });
+
+  return {
+    ...next,
+    heads: chart.heads,
+    managers: chart.managers,
+    sales: chart.sales,
+    removedIds: chart.removedIds,
   };
 }
 

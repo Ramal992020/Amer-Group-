@@ -248,8 +248,34 @@ export interface PersistedWalkin {
   skippedIds?: string[];
   /** Undo log (last actions first). */
   undoStack?: UndoEntry[];
+  /**
+   * Ids deleted by the user. Without this list the built-in defaults would
+   * bring a deleted built-in Head/Manager/Sales back on the next hydrate.
+   */
+  removedIds?: string[];
+  /**
+   * Revision of the SHARED org chart (the roster, same in SITE & RESTA) that
+   * this device last saw or published. `0` means "never synced the roster".
+   */
+  orgRevision?: number;
   /** Last modification time — used to resolve conflicts between devices. */
   updatedAt?: number;
+}
+
+/**
+ * The org chart: who works here (Heads + manager teams + sales roster).
+ *
+ * SITE and RESTA share ONE roster — a member added or renamed in either branch
+ * appears in the other one — while attendance, history and the queue stay per
+ * branch. See `src/lib/org.ts` (`applyOrgChart`) for how a shared chart is
+ * merged into a branch without losing anything.
+ */
+export interface OrgChart {
+  heads: HeadGroup[];
+  managers: ManagerTeam[];
+  sales: SalesPerson[];
+  /** Deleted member ids — they must not come back from the built-in defaults. */
+  removedIds: string[];
 }
 
 const STORAGE_KEY = 'amer-walkin-v3';
@@ -273,21 +299,79 @@ const storageKey = (accountOverride?: string): string => {
   return account ? `${STORAGE_KEY}-${account}` : STORAGE_KEY;
 };
 
-/** Merge defaults with any saved custom org so new built-in people always appear. */
-function mergeById<T extends { id: string }>(defaults: T[], custom?: T[] | null): T[] {
+/**
+ * Merge the built-in org with the saved copy.
+ *
+ * **Saved entries win** for the same id. Renaming a built-in Head/Manager/Sales
+ * keeps the id and writes the new name into the saved copy, so letting the
+ * built-in default win would silently revert every rename the next time the
+ * state is hydrated (from localStorage, from the cloud row or from a backup).
+ *
+ * `removedIds` keeps a member the user deleted from coming back, while ids that
+ * only exist in the built-ins (people added to the code later) are still
+ * appended, so a new built-in always shows up.
+ */
+function mergeById<T extends { id: string }>(
+  defaults: T[],
+  custom?: T[] | null,
+  removedIds: string[] = [],
+): T[] {
+  const removed = new Set(removedIds);
   const map = new Map<string, T>();
-  defaults.forEach((item) => map.set(item.id, item));
+  defaults.forEach((item) => {
+    if (!removed.has(item.id)) map.set(item.id, item);
+  });
   (custom ?? []).forEach((item) => {
-    if (!map.has(item.id)) map.set(item.id, item);
+    if (!removed.has(item.id)) map.set(item.id, item);
   });
   return [...map.values()];
 }
 
+/**
+ * Anything that carries a roster: a branch state (`customHeads`…), a chart
+ * (`heads`…) or the shared cloud row / a backup. Both spellings are accepted —
+ * the shared row stores the chart shape while every branch/backup payload uses
+ * the `custom*` names, and mixing them up would silently fall back to the
+ * built-in list.
+ */
+export interface OrgChartSource {
+  heads?: HeadGroup[];
+  managers?: ManagerTeam[];
+  sales?: SalesPerson[];
+  customHeads?: HeadGroup[];
+  customManagers?: ManagerTeam[];
+  customSales?: SalesPerson[];
+  removedIds?: string[];
+}
+
+/** Normalize any raw org chart (branch state, shared row, backup) into the three lists. */
+export function hydrateOrgChart(parsed?: OrgChartSource | null): OrgChart {
+  const removedIds = Array.isArray(parsed?.removedIds)
+    ? parsed.removedIds.filter((id): id is string => typeof id === 'string')
+    : [];
+  return {
+    heads: mergeById(HEADS, parsed?.customHeads ?? parsed?.heads, removedIds),
+    managers: mergeById(MANAGERS, parsed?.customManagers ?? parsed?.managers, removedIds),
+    sales: mergeById(SALES, parsed?.customSales ?? parsed?.sales, removedIds),
+    removedIds,
+  };
+}
+
+/** Canonical fingerprint of a chart — used to skip no-op updates. */
+export function orgChartKey(chart: OrgChart): string {
+  const sortById = <T extends { id: string }>(list: T[]): T[] =>
+    [...list].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return JSON.stringify({
+    heads: sortById(chart.heads),
+    managers: sortById(chart.managers),
+    sales: sortById(chart.sales),
+    removedIds: [...chart.removedIds].sort(),
+  });
+}
+
 /** Normalize any raw object (local or remote) into a valid state. */
 export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
-  const heads = mergeById(HEADS, parsed.customHeads);
-  const managers = mergeById(MANAGERS, parsed.customManagers);
-  const salesList = mergeById(SALES, parsed.customSales);
+  const { heads, managers, sales: salesList, removedIds } = hydrateOrgChart(parsed);
 
   const history = Array.isArray(parsed.history) ? parsed.history : [];
 
@@ -317,6 +401,8 @@ export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
     manualOrder: Array.isArray(parsed.manualOrder) ? parsed.manualOrder.filter((id): id is string => typeof id === 'string') : undefined,
     skippedIds: Array.isArray(parsed.skippedIds) ? parsed.skippedIds.filter((id): id is string => typeof id === 'string') : [],
     undoStack: Array.isArray(parsed.undoStack) ? (parsed.undoStack as UndoEntry[]) : [],
+    removedIds,
+    orgRevision: typeof parsed.orgRevision === 'number' ? parsed.orgRevision : 0,
     updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
   };
 }
@@ -349,6 +435,76 @@ export function savePersisted(p: PersistedWalkin, accountOverride?: string): voi
   } catch {
     /* storage full — ignore */
   }
+}
+
+/** SITE ⇄ RESTA — the two branches that share one roster. */
+const OTHER_BRANCH: Record<string, string> = { site: 'RESTA', resta: 'SITE' };
+
+/** The branch that shares the roster with `account` (null for other accounts). */
+export const otherWorkspace = (account: string): string | null =>
+  OTHER_BRANCH[account.trim().toLowerCase()] ?? null;
+
+/**
+ * One-time migration: build the first shared chart out of both branches.
+ *
+ * The shared row is created from whichever device connects first. If the two
+ * branches had drifted apart before the roster was shared (each one having
+ * added its own people), seeding it with a single branch's list would silently
+ * drop the other branch's members. So the two rosters are combined instead:
+ * `primary` (this device) wins on names, `secondary` only contributes people
+ * the primary does not know at all. After that the shared chart is the single
+ * source of truth and deletions propagate normally.
+ */
+export function mergeOrgCharts(primary: OrgChart, secondary: OrgChart): OrgChart {
+  const union = <T extends { id: string }>(mine: T[], theirs: T[], removed: Set<string>): T[] => {
+    const map = new Map(mine.map((x) => [x.id, x] as const));
+    theirs.forEach((x) => {
+      if (!map.has(x.id) && !removed.has(x.id)) map.set(x.id, x);
+    });
+    return [...map.values()];
+  };
+
+  const removed = new Set(primary.removedIds);
+  const heads = union(primary.heads, secondary.heads, removed);
+  const managers = union(primary.managers, secondary.managers, removed);
+  const sales = union(primary.sales, secondary.sales, removed);
+
+  // Keep every deletion that is still meaningful (the person is not back in the
+  // merged roster) so the built-in defaults cannot resurrect them.
+  const keptIds = new Set([...heads, ...managers, ...sales].map((x) => x.id));
+  const removedIds = [...new Set([...primary.removedIds, ...secondary.removedIds])].filter(
+    (id) => !keptIds.has(id),
+  );
+
+  return { heads, managers, sales, removedIds };
+}
+
+/**
+ * Copy the shared chart into the OTHER branch's local bucket on this device.
+ *
+ * The cloud row is what reaches the other devices; this only makes switching
+ * branch instant on this device (otherwise RESTA would show the old names for
+ * the second it takes to pull). Attendance/history of that bucket are kept —
+ * only the roster fields are replaced.
+ */
+export function mirrorOrgChart(account: string, chart: OrgChart, revision: number): void {
+  const other = OTHER_BRANCH[account.trim().toLowerCase()];
+  if (!other) return;
+  const state = loadPersisted(other);
+  // Never downgrade the other branch: its bucket may already hold a roster
+  // that was pulled from the cloud (or edited) after this one was saved.
+  if ((state.orgRevision ?? 0) > revision) return;
+  savePersisted(
+    {
+      ...state,
+      customHeads: chart.heads,
+      customManagers: chart.managers,
+      customSales: chart.sales,
+      removedIds: chart.removedIds,
+      orgRevision: revision,
+    },
+    other,
+  );
 }
 
 // ───────────────────────── Rotation engine ─────────────────────────
