@@ -39,13 +39,20 @@ import {
   carryOverForNewDay,
   createNewDaySalesState,
   reconcileCounts,
+  defaultSalesState,
   loadPersisted,
   savePersisted,
   hydrate,
+  hydrateOrgChart,
+  orgChartKey,
+  mirrorOrgChart,
+  mergeOrgCharts,
+  otherWorkspace,
   setActiveAccount,
   formatTime,
 } from './lib/walkin';
 import {
+  applyOrgChart,
   renameHead,
   renameManager,
   renameSalesPerson,
@@ -56,6 +63,8 @@ import type {
   CarryOver,
   HeadGroup,
   ManagerTeam,
+  OrgChart,
+  OrgChartSource,
   SalesPerson,
   SalesState,
   PersistedWalkin,
@@ -85,6 +94,7 @@ import {
   normalizeUrl,
   getSyncConfig,
   getLastSyncError,
+  SHARED_ORG_ACCOUNT,
 } from './lib/sync';
 import type { SyncConfig, SyncStatus } from './lib/sync';
 import { CurrentTurn } from './components/CurrentTurn';
@@ -94,7 +104,7 @@ import { HistoryPanel } from './components/HistoryPanel';
 import { ClientExcelBuilder } from './components/ClientExcelBuilder';
 import { ClientRegistration } from './components/ClientRegistration';
 import { DoneReceipt } from './components/DoneReceipt';
-import { ManageOrgPanel } from './components/ManageOrgPanel';
+import { AddMemberPanel, ManageOrgPanel } from './components/ManageOrgPanel';
 import { AmerLogo } from './components/AmerLogo';
 import {
   Modal,
@@ -127,6 +137,13 @@ const SYNC_PUSH_DEBOUNCE_MS = 400;
 const MAX_SYNC_RETRIES = 6;
 /** Give up auto-retrying an upload after this many consecutive failures. */
 const MAX_PUSH_RETRIES = 8;
+/**
+ * How often the SHARED org chart is polled (it changes far less often than
+ * attendance, so it does not need the 4s cadence; Realtime + the foreground
+ * sync make it instant when the table is published).
+ */
+const SYNC_ORG_POLL_MS = 20000;
+const SYNC_ORG_POLL_HIDDEN_MS = 60000;
 
 /** شاشة انتظار التحقق من الجلسة — لا يُعرض أي شيء من التطبيق قبل انتهائها. */
 function AuthSplash() {
@@ -256,6 +273,12 @@ function WalkInApp({
     return (boot.manualOrder || []).filter((id) => ids.has(id));
   });
 
+  // Roster bookkeeping shared by SITE & RESTA: ids deleted by the user (so the
+  // built-in defaults never resurrect them) and the revision of the shared
+  // chart this device has already seen/published.
+  const [removedIds, setRemovedIds] = useState<string[]>(boot.removedIds ?? []);
+  const [sharedOrgRev, setSharedOrgRev] = useState<number>(boot.orgRevision ?? 0);
+
   const [salesState, setSalesState] = useState<Record<string, SalesState>>(boot.salesState);
   const [history, setHistory] = useState<Assignment[]>(boot.history);
   const [counter, setCounter] = useState(boot.counter);
@@ -299,6 +322,25 @@ function WalkInApp({
   // Break the push ⇄ pull cycle without stale closures.
   const flushPushRef = useRef<() => Promise<void>>(async () => {});
   const pullNowRef = useRef<() => Promise<void>>(async () => {});
+  // Shared-roster plumbing (same pattern: refs, so intervals/timers never see
+  // a stale closure).
+  const sharedOrgRevRef = useRef<number>(boot.orgRevision ?? 0);
+  /** Set when THIS device edited the roster and the shared row is not updated yet. */
+  const orgDirtyRef = useRef(false);
+  const localChartRef = useRef<OrgChart>({
+    heads: boot.customHeads || DEFAULT_HEADS,
+    managers: boot.customManagers || DEFAULT_MANAGERS,
+    sales: boot.customSales || DEFAULT_SALES,
+    removedIds: boot.removedIds ?? [],
+  });
+  const adoptSharedOrgRef = useRef<(chart: OrgChart, revision: number) => void>(() => {});
+  const pullSharedOrgRef = useRef<() => Promise<boolean>>(async () => false);
+  const pushSharedOrgRef = useRef<(chart?: OrgChart) => Promise<void>>(async () => {});
+
+  const setOrgRevision = (revision: number): void => {
+    sharedOrgRevRef.current = revision;
+    setSharedOrgRev(revision);
+  };
 
   // Undo log — persisted + synced so "تراجع" restores the exact queue position
   // even after a reload (or on another device).
@@ -310,11 +352,18 @@ function WalkInApp({
   }, []);
 
   // Merge newly added built-in people into older saved data.
+  //
+  // The SAVED copy wins for the same id (a renamed member keeps the new name —
+  // the id never changes) and ids the user deleted stay deleted.
   useEffect(() => {
-    const byId = <T extends { id: string }>(base: T[], extra: T[]) => {
-      const map = new Map(base.map((x) => [x.id, x] as const));
-      extra.forEach((x) => {
-        if (!map.has(x.id)) map.set(x.id, x);
+    const removed = new Set(boot.removedIds ?? []);
+    const byId = <T extends { id: string }>(base: T[], saved: T[]) => {
+      const map = new Map<string, T>();
+      base.forEach((x) => {
+        if (!removed.has(x.id)) map.set(x.id, x);
+      });
+      saved.forEach((x) => {
+        if (!removed.has(x.id)) map.set(x.id, x);
       });
       return [...map.values()];
     };
@@ -344,6 +393,8 @@ function WalkInApp({
       customHeads: heads,
       customManagers: managers,
       customSales: sales,
+      removedIds,
+      orgRevision: sharedOrgRev,
       manualOrder,
       undoStack,
     }),
@@ -358,10 +409,34 @@ function WalkInApp({
       heads,
       managers,
       sales,
+      removedIds,
+      sharedOrgRev,
       manualOrder,
       undoStack,
     ],
   );
+
+  /**
+   * The roster as it is shared by SITE and RESTA: the built-in people plus the
+   * saved/renamed ones, minus whoever was deleted.
+   */
+  const localChart = useMemo<OrgChart>(
+    () => hydrateOrgChart({ heads, managers, sales, removedIds }),
+    [heads, managers, sales, removedIds],
+  );
+  // Assigned during render on purpose: a network response that lands right
+  // after another state change must never read the previous roster (an effect
+  // would still be holding the old values at that moment).
+  localChartRef.current = localChart;
+  const liveRef = useRef({ heads, managers, sales, history, carryOver, removedIds });
+  liveRef.current = { heads, managers, sales, history, carryOver, removedIds };
+
+  // Keep the OTHER branch's local bucket in step with the roster, so switching
+  // branch on this device shows the new names instantly — even before the
+  // cloud is reachable. (Other devices get it from the shared row.)
+  useEffect(() => {
+    mirrorOrgChart(account, localChart, sharedOrgRevRef.current);
+  }, [account, localChart]);
 
   // Latest render's snapshot, so a debounced upload never sends stale data.
   const latestSnapshotRef = useRef<PersistedWalkin>(snapshot);
@@ -381,9 +456,21 @@ function WalkInApp({
     setStartingHead(state.startingHead);
     setCarryOver(state.carryOver);
     setLastResetAt(state.lastResetAt);
-    if (state.customHeads) setHeads(state.customHeads);
-    if (state.customManagers) setManagers(state.customManagers);
-    if (state.customSales) setSales(state.customSales);
+    // The roster (Heads / managers / sales) is SHARED by both branches, so a
+    // branch row only wins when its copy is at least as fresh as the shared
+    // chart this device already holds. An older copy is ignored and the row is
+    // marked dirty, which republishes today's roster into it instead of
+    // letting a stale row undo a name that was edited in the other branch.
+    const incomingOrgRev = state.orgRevision ?? 0;
+    if (incomingOrgRev >= sharedOrgRevRef.current) {
+      if (state.customHeads) setHeads(state.customHeads);
+      if (state.customManagers) setManagers(state.customManagers);
+      if (state.customSales) setSales(state.customSales);
+      if (Array.isArray(state.removedIds)) setRemovedIds(state.removedIds);
+      setOrgRevision(incomingOrgRev);
+    } else if (state.customHeads) {
+      dirtySeqRef.current += 1;
+    }
     if (Array.isArray(state.manualOrder)) setManualOrder(state.manualOrder);
     if (Array.isArray(state.undoStack)) setUndoStack(state.undoStack);
     savePersisted(state, account);
@@ -392,6 +479,135 @@ function WalkInApp({
       applyingRemoteRef.current = false;
     }, 0);
   }, [account]);
+
+  /**
+   * Apply the SHARED roster (a chart that another branch just published).
+   *
+   * Renames go through `applyOrgChart`, so this branch's history, its
+   * carried-over team and every served turn show the corrected name, and a
+   * member added in the other branch gets an attendance row here (absent until
+   * somebody checks them in — attendance itself stays per branch).
+   */
+  const adoptSharedOrg = useCallback(
+    (chart: OrgChart, revision: number) => {
+      if (orgChartKey(chart) === orgChartKey(localChartRef.current)) {
+        // Same roster — only remember how fresh the shared row is.
+        setOrgRevision(revision);
+        return;
+      }
+      const live = liveRef.current;
+      const next = applyOrgChart(
+        {
+          heads: live.heads,
+          managers: live.managers,
+          sales: live.sales,
+          history: live.history,
+          carryOver: live.carryOver,
+          removedIds: live.removedIds,
+        },
+        chart,
+      );
+      setHeads(next.heads);
+      setManagers(next.managers);
+      setSales(next.sales);
+      setHistory(next.history);
+      setCarryOver(next.carryOver);
+      setRemovedIds(next.removedIds ?? []);
+      // New people start as «لم يحضر»; existing attendance is never touched.
+      setSalesState((prev) => {
+        const merged = defaultSalesState(next.sales);
+        next.sales.forEach((person) => {
+          if (prev[person.id]) merged[person.id] = { ...merged[person.id], ...prev[person.id] };
+        });
+        return merged;
+      });
+      setManualOrder((prev) => prev.filter((id) => next.managers.some((m) => m.id === id)));
+      setOrgRevision(revision);
+      mirrorOrgChart(account, chart, revision);
+      toast('info', 'تم تحديث الهيكل من الفرع الآخر');
+    },
+    [account, toast],
+  );
+  useEffect(() => {
+    adoptSharedOrgRef.current = adoptSharedOrg;
+  }, [adoptSharedOrg]);
+
+  /** Read the shared roster row. Returns whether a row was found. */
+  const pullSharedOrg = useCallback(async (): Promise<boolean> => {
+    if (!syncReadyRef.current) return false;
+    const remote = await pullRemote(SHARED_ORG_ACCOUNT, undefined, getSyncConfig(account));
+    if (!remote) return false;
+    const chart = hydrateOrgChart(remote.payload as OrgChartSource);
+    if (remote.updatedAt > sharedOrgRevRef.current) {
+      // A newer roster from the other branch — unless this device has its own
+      // unpublished edit, which is pushed with a newer stamp instead.
+      if (!orgDirtyRef.current) adoptSharedOrgRef.current(chart, remote.updatedAt);
+      return true;
+    }
+    // The row is not ahead of us: publish ours when it differs (this also
+    // re-creates the row if it was removed).
+    if (orgDirtyRef.current || orgChartKey(chart) !== orgChartKey(localChartRef.current)) {
+      await pushSharedOrgRef.current();
+    }
+    return true;
+  }, [account]);
+  useEffect(() => {
+    pullSharedOrgRef.current = pullSharedOrg;
+  }, [pullSharedOrg]);
+
+  /** Publish a roster (default: this device's) to the row both branches read. */
+  const pushSharedOrg = useCallback(async (chartToPush?: OrgChart): Promise<void> => {
+    if (!syncReadyRef.current) return;
+    const chart = chartToPush ?? localChartRef.current;
+    const stamp = Math.max(syncNow(), sharedOrgRevRef.current + 1);
+    const result = await pushRemote(
+      SHARED_ORG_ACCOUNT,
+      { ...chart, updatedAt: stamp },
+      stamp,
+      getSyncConfig(account),
+    );
+    if (result === 'written') {
+      orgDirtyRef.current = false;
+      setOrgRevision(stamp);
+      mirrorOrgChart(account, chart, stamp);
+    } else if (result === 'stale') {
+      // Another device published a newer roster while we were writing.
+      orgDirtyRef.current = false;
+      await pullSharedOrgRef.current();
+    }
+    // 'failed' keeps `orgDirty` set so the next tick retries it.
+  }, [account]);
+  useEffect(() => {
+    pushSharedOrgRef.current = pushSharedOrg;
+  }, [pushSharedOrg]);
+
+  /**
+   * Boot/connect step: make this device and the shared row agree. Our own
+   * pending edit wins; otherwise the fresher roster is adopted; when the row
+   * does not exist yet it is created from this device's roster.
+   */
+  const reconcileSharedOrg = useCallback(async (): Promise<void> => {
+    if (orgDirtyRef.current) {
+      await pushSharedOrgRef.current();
+      return;
+    }
+    const found = await pullSharedOrgRef.current();
+    if (found) return;
+    // No shared row yet (first run after this feature, or the row was deleted):
+    // create it from BOTH branches so a member that only exists in the other
+    // one is not dropped. From here on the shared chart is the source of truth.
+    const other = otherWorkspace(account);
+    const otherRow = other ? await pullRemote(other, undefined, getSyncConfig(account)) : null;
+    const seed = otherRow
+      ? mergeOrgCharts(localChartRef.current, hydrateOrgChart(otherRow.payload as OrgChartSource))
+      : localChartRef.current;
+    await pushSharedOrgRef.current(seed);
+  }, [account]);
+
+  /** Mark the roster as edited locally so the shared row is republished. */
+  const markOrgEdited = (): void => {
+    orgDirtyRef.current = true;
+  };
 
   /** Reconnect with exponential backoff after a transient failure. */
   const scheduleReconnect = useCallback(() => {
@@ -478,6 +694,8 @@ function WalkInApp({
   /** One tick drives both directions: upload pending edits, else poll. */
   const syncTick = useCallback((): void => {
     if (!syncReadyRef.current) return;
+    // A roster edit is tiny and independent from the attendance push.
+    if (orgDirtyRef.current) void pushSharedOrgRef.current();
     if (isDirty() && pushFailuresRef.current < MAX_PUSH_RETRIES) {
       void flushPushRef.current();
     } else {
@@ -540,6 +758,9 @@ function WalkInApp({
     setSyncStatus('synced');
     setLastSyncAt(Date.now());
     setRealtimeGen((n) => n + 1);
+    // The roster is shared by SITE & RESTA — agree on it before uploading the
+    // branch state, so the first push already carries the right names.
+    await reconcileSharedOrg();
     if (input) toast('success', 'تم الاتصال بكل الأجهزة بنجاح');
     if (isDirty()) void flushPushRef.current();
   };
@@ -604,11 +825,15 @@ function WalkInApp({
       // or the page restored from the back/forward cache.
       syncAttemptsRef.current = 0;
       pushFailuresRef.current = 0;
+      if (orgDirtyRef.current) void pushSharedOrgRef.current();
+      else void pullSharedOrgRef.current();
       syncTick();
     };
     const onOnline = () => {
       syncAttemptsRef.current = 0;
       pushFailuresRef.current = 0;
+      if (orgDirtyRef.current) void pushSharedOrgRef.current();
+      else void pullSharedOrgRef.current();
       syncTick();
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -628,6 +853,23 @@ function WalkInApp({
     return () => clearInterval(id);
   }, [pageVisible, syncTick]);
 
+  // The shared roster changes rarely, so it gets its own slower cadence.
+  useEffect(() => {
+    const id = setInterval(
+      () => {
+        if (!syncReadyRef.current) return;
+        // An edit that could not be published (network hiccup while adding or
+        // renaming a member) is retried here — otherwise it would stay on this
+        // device until the next local change, and the other branch would keep
+        // showing the old name.
+        if (orgDirtyRef.current) void pushSharedOrgRef.current();
+        else void pullSharedOrgRef.current();
+      },
+      pageVisible ? SYNC_ORG_POLL_MS : SYNC_ORG_POLL_HIDDEN_MS,
+    );
+    return () => clearInterval(id);
+  }, [pageVisible]);
+
   // Realtime: when Supabase pushes a change made on another device, pull it
   // immediately instead of waiting for the next poll tick. Polling above stays
   // as the fallback in case Realtime is not enabled on the table.
@@ -637,6 +879,18 @@ function WalkInApp({
       if (updatedAt > revisionRef.current) syncTick();
     });
   }, [account, realtimeGen, syncTick]);
+
+  // A roster edit in the other branch arrives on the same table/channel.
+  useEffect(() => {
+    if (realtimeGen === 0) return;
+    return subscribeRemote(
+      SHARED_ORG_ACCOUNT,
+      () => {
+        if (!orgDirtyRef.current) void pullSharedOrgRef.current();
+      },
+      getSyncConfig(account),
+    );
+  }, [account, realtimeGen]);
 
   const connectWithConfig = (url: string, key: string) => runSync({ url, key });
 
@@ -777,10 +1031,21 @@ function WalkInApp({
   });
 
   // ── Org handlers ──
+  // Every one of them is a ROSTER edit: it is mirrored to the shared row, so
+  // the same Head/manager/sales shows up in BOTH branches (SITE & RESTA).
+  // `removedIds` records deletions, otherwise the built-in defaults would bring
+  // a deleted built-in member back on the next reload — and in the other branch.
+  const keepRemoved = (ids: string[]) =>
+    setRemovedIds((prev) => [...new Set([...prev, ...ids])]);
+  const restoreRemoved = (ids: string[]) =>
+    setRemovedIds((prev) => prev.filter((id) => !ids.includes(id)));
+
   const addHead = (name: string, ar?: string) => {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `head-${Date.now()}`;
     const id = heads.some((h) => h.id === slug) ? `${slug}-${Date.now().toString().slice(-4)}` : slug;
     setHeads((prev) => [...prev, { id, name, ar: ar || name }]);
+    restoreRemoved([id]);
+    markOrgEdited();
   };
 
   const addManager = (name: string, headId: string, ar?: string) => {
@@ -793,6 +1058,8 @@ function WalkInApp({
       ...prev,
       [personId]: { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, lastServedAt: null },
     }));
+    restoreRemoved([mgrId, personId]);
+    markOrgEdited();
   };
 
   const addSales = (name: string, managerId: string, headId: string) => {
@@ -803,46 +1070,48 @@ function WalkInApp({
       ...prev,
       [id]: { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, lastServedAt: null },
     }));
+    restoreRemoved([id]);
+    markOrgEdited();
   };
 
   /**
    * Renaming edits the member in place — the id (and therefore the attendance,
    * the counters, the queue position and every already-served turn) is kept.
    */
-  const orgState = (): OrgState => ({ heads, managers, sales, history, carryOver });
+  const orgState = (): OrgState => ({ heads, managers, sales, history, carryOver, removedIds });
 
-  const updateHeadName = (headId: string, name: string, ar?: string) => {
-    const next = renameHead(orgState(), headId, name, ar);
+  /** Apply a rename result and publish the new roster to the shared row. */
+  const commitOrg = (next: OrgState) => {
     setHeads(next.heads);
     setManagers(next.managers);
     setSales(next.sales);
     setHistory(next.history);
     setCarryOver(next.carryOver);
+    markOrgEdited();
+  };
+
+  const updateHeadName = (headId: string, name: string, ar?: string) => {
+    commitOrg(renameHead(orgState(), headId, name, ar));
   };
 
   const updateManagerName = (managerId: string, name: string, ar?: string) => {
-    const next = renameManager(orgState(), managerId, name, ar);
-    setHeads(next.heads);
-    setManagers(next.managers);
-    setSales(next.sales);
-    setHistory(next.history);
-    setCarryOver(next.carryOver);
+    commitOrg(renameManager(orgState(), managerId, name, ar));
   };
 
   const updateSalesName = (salesId: string, name: string) => {
-    const next = renameSalesPerson(orgState(), salesId, name);
-    setHeads(next.heads);
-    setManagers(next.managers);
-    setSales(next.sales);
-    setHistory(next.history);
-    setCarryOver(next.carryOver);
+    commitOrg(renameSalesPerson(orgState(), salesId, name));
   };
 
   const deleteHead = (headId: string) => {
     setHeads((prev) => prev.filter((h) => h.id !== headId));
     const mgrIds = managers.filter((m) => m.headId === headId).map((m) => m.id);
     setManagers((prev) => prev.filter((m) => m.headId !== headId));
+    const goneSales = sales
+      .filter((s) => s.headId === headId || mgrIds.includes(s.managerId))
+      .map((s) => s.id);
     setSales((prev) => prev.filter((s) => s.headId !== headId && !mgrIds.includes(s.managerId)));
+    keepRemoved([headId, ...mgrIds, ...goneSales]);
+    markOrgEdited();
     if (startingHead === headId) {
       const remaining = heads.filter((h) => h.id !== headId);
       if (remaining[0]) setStartingHead(remaining[0].id);
@@ -851,7 +1120,10 @@ function WalkInApp({
 
   const deleteManager = (mgrId: string) => {
     setManagers((prev) => prev.filter((m) => m.id !== mgrId));
+    const goneSales = sales.filter((s) => s.managerId === mgrId).map((s) => s.id);
     setSales((prev) => prev.filter((s) => s.managerId !== mgrId));
+    keepRemoved([mgrId, ...goneSales]);
+    markOrgEdited();
   };
 
   const deleteSales = (salesId: string) => {
@@ -861,6 +1133,8 @@ function WalkInApp({
       delete copy[salesId];
       return copy;
     });
+    keepRemoved([salesId]);
+    markOrgEdited();
   };
 
   // ── Attendance ──
@@ -1617,6 +1891,31 @@ function WalkInApp({
             {/* ═══════ MANAGE ═══════ */}
             {tab === 'manage' && (
               <div className="space-y-4">
+                {/* Top: add a member (shows up in BOTH branches). */}
+                <AddMemberPanel
+                  heads={heads}
+                  managers={managers}
+                  onAddHead={addHead}
+                  onAddManager={addManager}
+                  onAddSales={addSales}
+                />
+                <ManageOrgPanel
+                  heads={heads}
+                  managers={managers}
+                  sales={sales}
+                  onRenameHead={updateHeadName}
+                  onRenameManager={updateManagerName}
+                  onRenameSales={updateSalesName}
+                  onDeleteHead={deleteHead}
+                  onDeleteManager={deleteManager}
+                  onDeleteSales={deleteSales}
+                />
+
+                {/* Bottom: backup/restore + device sync. */}
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="text-[12px] font-extrabold text-ink-400">النسخ الاحتياطي والمزامنة بين الأجهزة</span>
+                  <span className="h-px flex-1 bg-ink-100" />
+                </div>
                 <BackupPanel
                   account={account}
                   state={{ ...snapshot, updatedAt: revisionRef.current }}
@@ -1629,20 +1928,6 @@ function WalkInApp({
                   errorDetail={syncStatus === 'error' ? getLastSyncError() : null}
                   onConnect={connectWithConfig}
                   onRetry={retrySync}
-                />
-                <ManageOrgPanel
-                  heads={heads}
-                  managers={managers}
-                  sales={sales}
-                  onAddHead={addHead}
-                  onAddManager={addManager}
-                  onAddSales={addSales}
-                  onRenameHead={updateHeadName}
-                  onRenameManager={updateManagerName}
-                  onRenameSales={updateSalesName}
-                  onDeleteHead={deleteHead}
-                  onDeleteManager={deleteManager}
-                  onDeleteSales={deleteSales}
                 />
               </div>
             )}

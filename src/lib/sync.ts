@@ -38,6 +38,14 @@ export const DEFAULT_SYNC: SyncConfig = {
 };
 
 const STANDARD_TABLE = 'walkin_state';
+
+/**
+ * The `account` value of the row that holds the org chart shared by BOTH
+ * branches: a manager/head/sales added or renamed in SITE shows up in RESTA
+ * (and the other way round). Attendance, history and the queue stay in the two
+ * per-branch rows — only the roster is shared.
+ */
+export const SHARED_ORG_ACCOUNT = 'ORG';
 const PROBE_TABLES = [
   'walkin_state',
   'walkin',
@@ -334,8 +342,9 @@ async function readStandardRow(cfg: SyncConfig, account: string): Promise<Standa
 export async function pullRemote(
   account: string,
   seed?: unknown,
+  config?: SyncConfig,
 ): Promise<RemoteState | null> {
-  const cfg = getSyncConfig(account);
+  const cfg = config ?? getSyncConfig(account);
   try {
     if (isStandard(cfg)) {
       const read = await readStandardRow(cfg, account);
@@ -343,7 +352,7 @@ export async function pullRemote(
       if (!read.row) {
         if (seed !== undefined) {
           const stamp = syncNow();
-          if ((await pushRemote(account, seed, stamp)) !== 'failed') {
+          if ((await pushRemote(account, seed, stamp, cfg)) !== 'failed') {
             return { payload: seed as Record<string, unknown>, updatedAt: stamp };
           }
         }
@@ -365,7 +374,7 @@ export async function pullRemote(
     if (!Array.isArray(rows) || rows.length === 0) {
       if (seed !== undefined) {
         const stamp = syncNow();
-        if ((await pushRemote(account, seed, stamp)) !== 'failed') {
+        if ((await pushRemote(account, seed, stamp, cfg)) !== 'failed') {
           return { payload: seed as Record<string, unknown>, updatedAt: stamp };
         }
       }
@@ -394,8 +403,9 @@ export async function pushRemote(
   account: string,
   payload: unknown,
   stamp: number = syncNow(),
+  config?: SyncConfig,
 ): Promise<PushResult> {
-  const cfg = getSyncConfig(account);
+  const cfg = config ?? getSyncConfig(account);
   const stampIso = new Date(stamp).toISOString();
   try {
     if (isStandard(cfg)) {
@@ -500,8 +510,12 @@ export async function pushRemote(
  * new `updated_at` (ms) whenever any device writes. Returns an unsubscribe fn.
  * No-op for custom table shapes or a different project than the login one.
  */
-export function subscribeRemote(account: string, onChange: (updatedAt: number) => void): () => void {
-  const cfg = getSyncConfig(account);
+export function subscribeRemote(
+  account: string,
+  onChange: (updatedAt: number) => void,
+  config?: SyncConfig,
+): () => void {
+  const cfg = config ?? getSyncConfig(account);
   if (!isStandard(cfg) || normalizeUrl(cfg.url) !== normalizeUrl(SUPABASE_URL)) return () => {};
   try {
     const channel = supabase
@@ -525,6 +539,8 @@ export function subscribeRemote(account: string, onChange: (updatedAt: number) =
 }
 
 export const SQL_SETUP = `-- ══════ (1) جدول مزامنة الـ Walk-In — شغّل هذا دائماً ══════
+-- نفس الجدول بيحمل صفوف الفروع (SITE / RESTA) + صف الهيكل المشترك بينهم
+-- (account = 'ORG')، فمفيش أي تعديل مطلوب على الجدول ده.
 create table if not exists walkin_state (
   account text primary key,
   payload jsonb not null,
