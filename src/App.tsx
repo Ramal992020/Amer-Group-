@@ -825,13 +825,15 @@ function WalkInApp({
       // or the page restored from the back/forward cache.
       syncAttemptsRef.current = 0;
       pushFailuresRef.current = 0;
-      if (!orgDirtyRef.current) void pullSharedOrgRef.current();
+      if (orgDirtyRef.current) void pushSharedOrgRef.current();
+      else void pullSharedOrgRef.current();
       syncTick();
     };
     const onOnline = () => {
       syncAttemptsRef.current = 0;
       pushFailuresRef.current = 0;
-      if (!orgDirtyRef.current) void pullSharedOrgRef.current();
+      if (orgDirtyRef.current) void pushSharedOrgRef.current();
+      else void pullSharedOrgRef.current();
       syncTick();
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -855,8 +857,13 @@ function WalkInApp({
   useEffect(() => {
     const id = setInterval(
       () => {
-        if (!syncReadyRef.current || orgDirtyRef.current) return;
-        void pullSharedOrgRef.current();
+        if (!syncReadyRef.current) return;
+        // An edit that could not be published (network hiccup while adding or
+        // renaming a member) is retried here — otherwise it would stay on this
+        // device until the next local change, and the other branch would keep
+        // showing the old name.
+        if (orgDirtyRef.current) void pushSharedOrgRef.current();
+        else void pullSharedOrgRef.current();
       },
       pageVisible ? SYNC_ORG_POLL_MS : SYNC_ORG_POLL_HIDDEN_MS,
     );
