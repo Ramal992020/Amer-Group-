@@ -1,36 +1,37 @@
 import { useState } from 'react';
 import { CheckCircle2, Copy, Check, ArrowLeft, User, Users, Crown } from 'lucide-react';
-import type { Assignment, ComputedTurn } from '../lib/walkin';
 import { formatTime } from '../lib/walkin';
+import type { Assignment, TeamTurn, VisitType } from '../lib/walkin';
 import { Modal } from './ui';
 
 interface Props {
   assignment: Assignment;
-  next: ComputedTurn | null;
+  /** Next TEAM on turn — no sales name is proposed (the sales is picked manually). */
+  next: TeamTurn | null;
   onClose: () => void;
+}
+
+/** «Walk in (الفرع)» — the branch the visit happened at. */
+function visitHeadline(visit: VisitType): string {
+  if (visit === 'site') return 'Walk in (Site)';
+  if (visit === 'resta') return 'Walk in (Resta)';
+  return 'Walk in';
 }
 
 export function DoneReceipt({ assignment, next, onClose }: Props) {
   const [copied, setCopied] = useState(false);
 
   const visit = assignment.visitType ?? 'walkin';
-  const title =
-    visit === 'walkin' ? 'Walk in done ✅' : visit === 'site' ? 'Walk in Site Done ✅' : 'Walk in Resta Done ✅';
+  const title = `${visitHeadline(visit)} Done ✅`;
 
-  const salesLine = assignment.substituted
-    ? `${assignment.originalSalesName ?? ''} (shiftted) / ${assignment.salesName} Done✅`
-    : assignment.salesName;
-
-  const nextBlock = next
-    ? `Next Sales : ${next.salesName}\nManager : ${next.managerName}\nHead : ${next.headName}`
-    : 'Next Sales : —';
-
+  // البيان المطلوب: الفرع، السيلز اللي تم اختياره (Done ✅)، المدير، الهيد،
+  // ثم المدير اللي عليه الدور — بدون ذكر أي اسم سيلز في «Next».
   const text =
     `${title}\n` +
-    `Sales : ${salesLine}\n` +
+    `Sales : ${assignment.salesName} Done✅\n` +
     `Manager : ${assignment.managerName}\n` +
     `Head : ${assignment.headName}\n` +
-    `\n${nextBlock}`;
+    `Next : ${next ? next.managerName : '—'}`;
 
   const copy = async () => {
     try {
@@ -81,16 +82,10 @@ export function DoneReceipt({ assignment, next, onClose }: Props) {
         {/* current */}
         <div className="mt-4 space-y-2.5 rounded-2xl border border-ink-100 bg-ink-50/70 p-4 text-left">
           <Row icon={<User className="size-4" />} label="Sales :">
-            {assignment.substituted ? (
-              <span className="flex flex-wrap items-center gap-1.5">
-                <span>{assignment.originalSalesName ?? ''}</span>
-                <span className="badge badge-amber">(shiftted)</span>
-                <span>/ {assignment.salesName}</span>
-                <span className="text-emerald-600">Done✅</span>
-              </span>
-            ) : (
-              assignment.salesName
-            )}
+            <span className="flex flex-wrap items-center gap-1.5">
+              <span>{assignment.salesName}</span>
+              <span className="text-emerald-600">Done✅</span>
+            </span>
           </Row>
           <Row icon={<Users className="size-4" />} label="Manager :">
             {assignment.managerName}
@@ -100,21 +95,14 @@ export function DoneReceipt({ assignment, next, onClose }: Props) {
           </Row>
         </div>
 
-        {/* next */}
-        <div className="mt-3 space-y-2.5 rounded-2xl border border-brand-100 bg-brand-50/70 p-4 text-left">
-          <Row icon={<ArrowLeft className="size-4" />} label="Next Sales :">
-            {next ? <span className="text-brand-700">{next.salesName}</span> : <span className="text-ink-400">—</span>}
+        {/* next — the manager whose team is on turn, without a sales name */}
+        <div className="mt-3 space-y-1 rounded-2xl border border-brand-100 bg-brand-50/70 p-4 text-left">
+          <Row icon={<ArrowLeft className="size-4" />} label="Next :">
+            {next ? <span className="text-brand-700">تيم {next.managerName}</span> : <span className="text-ink-400">—</span>}
           </Row>
-          {next && (
-            <>
-              <Row icon={<Users className="size-4" />} label="Manager :">
-                {next.managerName}
-              </Row>
-              <Row icon={<Crown className="size-4" />} label="Head :">
-                {next.headName}
-              </Row>
-            </>
-          )}
+          <p dir="rtl" className="pl-[106px] text-[10.5px] font-semibold text-ink-400">
+            الدور على التيم — يتم اختيار السيلز يدوياً عند الدور
+          </p>
         </div>
 
         {/* actions */}
