@@ -39,6 +39,27 @@ grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1
                                                     # check is what killed sync
 ```
 
+## Rotation model — team turns, manual sales choice
+
+SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
+
+* `computeNextTeam()` (in `src/lib/walkin.ts`) decides *whose team* is on turn,
+  starting from yesterday's unserved team (`carryOver.managerId`) and otherwise
+  continuing after the most recently served team in the fixed cycle
+  (`AUTOMATIC_TEAM_ORDER`). Teams with nobody available are skipped in place.
+* The sales who sits with the client is **chosen manually** from that team
+  (`availableTeamMembers()` only orders the picker by fairness). Nothing in the
+  engine may propose a sales name — `ComputedTurn.salesId` stays `''` for these
+  workspaces and `computeNextTurn`/`predictFullRound` delegate to the team path.
+* The «الترتيب» tab renders `teamOrderFrom()` — managers, one row each, with
+  their roster and the arrow buttons that write to `manualOrder` (manager IDs).
+* The receipt (`DoneReceipt`) is exactly:
+  `Walk in (Branch) Done ✅ / Sales : X Done✅ / Manager : … / Head : … / Next : …`
+  where **Next is the next manager only** (no sales name). There is no
+  `(shiftted)` line any more — the substitute concept is gone from the flow.
+* A carry-over is consumed when its team is served (`managerId` match in
+  `confirmWith`), so a served team is never pinned again.
+
 ## Sync layer — things that must stay true
 
 * **Never call `GET /rest/v1/` (the PostgREST OpenAPI root) with the publishable

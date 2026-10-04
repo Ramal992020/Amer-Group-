@@ -5,8 +5,9 @@ import {
   HEADS,
   MANAGERS,
   SALES,
+  availableTeamMembers,
   carryOverForNewDay,
-  carryOverTurn,
+  computeNextTeam,
   computeNextTurn,
   createNewDaySalesState,
   defaultSalesState,
@@ -14,6 +15,8 @@ import {
   predictFullRound,
   savePersisted,
   setActiveAccount,
+  successorTeam,
+  teamOrderFrom,
 } from './walkin.ts';
 import type {
   Assignment,
@@ -25,6 +28,8 @@ import type {
   RotationOptions,
   SalesPerson,
   SalesState,
+  TeamTurn,
+  TurnIdentity,
 } from './walkin.ts';
 
 const HALA = 'custom-hala-913';
@@ -68,12 +73,13 @@ function fixture(membersPerTeam = 1): Fixture {
   return { heads, managers, sales, state };
 }
 
-function assignment(turn: ComputedTurn, n = 1): Assignment {
+/** An assignment of a team's turn: the team is what the cycle records. */
+function assignment(turn: TurnIdentity, n = 1): Assignment {
   return {
     id: `assignment-${n}`,
     n,
-    salesId: turn.salesId,
-    salesName: turn.salesName,
+    salesId: '',
+    salesName: '',
     managerId: turn.managerId,
     managerName: turn.managerName,
     headId: turn.headId,
@@ -105,8 +111,9 @@ function teamHistory(f: Fixture, managerId: string): Assignment {
 function carry(f: Fixture, managerId = 'rewaida'): CarryOver {
   const previous = teamHistory(f, managerId);
   return {
-    salesId: previous.salesId,
-    salesName: previous.salesName,
+    // The current flow carries the TEAM: the sales is chosen manually on the day.
+    salesId: '',
+    salesName: '',
     managerId: previous.managerId,
     managerName: previous.managerName,
     headId: previous.headId,
@@ -115,16 +122,18 @@ function carry(f: Fixture, managerId = 'rewaida'): CarryOver {
   };
 }
 
+/** Team-level turn (the production path for both workspaces). */
 function next(
   f: Fixture,
   history: Assignment[] = [],
   options: RotationOptions = {},
   excludeIds: string[] = [],
-  startingHead = 'khaled',
-): ComputedTurn | null {
-  return computeNextTurn(f.state, history, startingHead, excludeIds, f.heads, f.managers, f.sales, {
+  _startingHead = 'khaled',
+): TeamTurn | null {
+  return computeNextTeam(f.state, history, f.managers, f.sales, f.heads, {
     workspace: 'RESTA',
     ...options,
+    skippedIds: [...(options.skippedIds ?? []), ...excludeIds],
   });
 }
 
@@ -160,6 +169,28 @@ test('RESTA and SITE start with Ahmed and use the same fixed order despite check
   }
 });
 
+test('the engine never proposes a sales name in SITE/RESTA — the turn is the team', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture(3);
+    const turn = next(f, [], { workspace });
+    assert.equal(turn?.managerId, 'ahmed');
+    // No sales is suggested anywhere: the choice is manual, per client.
+    assert.ok(!('salesId' in (turn as unknown as Record<string, unknown>)));
+    assert.ok(round(f, undefined, { workspace }).every((t) => t.salesId === '' && t.salesName === ''));
+    assert.equal(computeNextTurn(f.state, [], 'khaled', [], f.heads, f.managers, f.sales, { workspace })?.salesId, '');
+  }
+});
+
+test('a team turn exposes the roster to pick from, not one chosen person', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture(3);
+    const roster = availableTeamMembers('ahmed', f.state, f.sales);
+    assert.deepEqual(roster.map((s) => s.id), ['ahmed-member-1', 'ahmed-member-2', 'ahmed-member-3']);
+    assert.ok(roster.every((s) => !s.isManager));
+    assert.equal(next(f, [], { workspace })?.managerId, 'ahmed');
+  }
+});
+
 test('RESTA and SITE repeat the six-team cycle across actual assignments', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture(2);
@@ -170,18 +201,19 @@ test('RESTA and SITE repeat the six-team cycle across actual assignments', () =>
       assert.ok(turn);
       actual.push(turn.managerId);
       history.push(assignment(turn, i + 1));
-      f.state[turn.salesId].walkCount += 1;
     }
     assert.deepEqual(actual, [...CYCLE, ...CYCLE, ...CYCLE]);
   }
 });
 
-test('full-round prediction uses the same cycle and never repeats a sales person', () => {
+test('the round is the team cycle: every available team once, in turn order', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture(2);
-    const predicted = round(f, next(f, [], { workspace }), { workspace });
-    assert.deepEqual(predicted.map((t) => t.managerId), [...CYCLE, ...CYCLE]);
-    assert.equal(new Set(predicted.map((t) => t.salesId)).size, CYCLE.length * 2);
+    // No seed turn any more: the pending team comes from the carry-over/options.
+    const predicted = round(f, undefined, { workspace });
+    assert.deepEqual(predicted.map((t) => t.managerId), CYCLE);
+    assert.equal(new Set(predicted.map((t) => t.managerId)).size, CYCLE.length);
+    assert.equal(predicted.filter((t) => t.salesId === '').length, CYCLE.length);
   }
 });
 
@@ -197,19 +229,112 @@ test('each team is followed by its fixed successor, including Dina back to Ahmed
   }
 });
 
+test('the order list rotates the cycle so the current team is first, and keeps empty teams visible', () => {
+  const f = fixture();
+  setTeamStatus(f, HALA, 'absent');
+  assert.deepEqual(teamOrderFrom(f.managers, 'shehata').map((t) => t.id), [
+    'shehata', 'perry', HALA, DINA, 'ahmed', 'rewaida',
+  ]);
+  // Every cycle team appears exactly once, so the tab can show who is missing.
+  assert.equal(teamOrderFrom(f.managers).length, CYCLE.length);
+  assert.equal(teamOrderFrom(f.managers).filter((t) => t.id === HALA).length, 1);
+});
+
+test('successorTeam continues the cycle and falls back to its start for unknown teams', () => {
+  const f = fixture();
+  assert.equal(successorTeam(f.managers, 'ahmed')?.id, 'rewaida');
+  assert.equal(successorTeam(f.managers, DINA)?.id, 'ahmed');
+  assert.equal(successorTeam(f.managers, 'tarek-osman')?.id, 'ahmed');
+  assert.equal(successorTeam(f.managers, null)?.id, 'ahmed');
+});
+
+test('within a team the picker order is fewer own turns first, then earliest check-in', () => {
+  const f = fixture(3);
+  f.state['ahmed-member-1'].walkCount = 2;
+  f.state['ahmed-member-2'].walkCount = 1;
+  f.state['ahmed-member-3'].walkCount = 1;
+  f.state['ahmed-member-3'].checkInOrder = 99;
+  assert.deepEqual(
+    availableTeamMembers('ahmed', f.state, f.sales).map((s) => s.id),
+    ['ahmed-member-2', 'ahmed-member-3', 'ahmed-member-1'],
+  );
+});
+
+test('a team with nobody available is skipped and the roster drives eligibility', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture(2);
+    setTeamStatus(f, 'ahmed', 'absent');
+    assert.equal(next(f, [], { workspace })?.managerId, 'rewaida');
+    assert.deepEqual(availableTeamMembers('ahmed', f.state, f.sales), []);
+    // A single skipped member does not disable the team while a teammate is free.
+    assert.equal(next(f, [], { workspace, skippedIds: ['rewaida-member-1'] })?.managerId, 'rewaida');
+  }
+});
+
+test('attendance counts and other teams check-in order cannot change fixed team order', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    f.state['ahmed-member-1'].walkCount = 99;
+    f.state['ahmed-member-1'].coverCount = 100;
+    f.state['ahmed-member-1'].checkInOrder = 1000;
+    assert.equal(next(f, [], { workspace })?.managerId, 'ahmed');
+  }
+});
+
+test('managers remain attendance-only and do not make an unavailable team eligible', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    setTeamStatus(f, HALA, 'absent');
+    assert.equal(f.state[`${HALA}-self`].status, 'available');
+    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, DINA);
+    assert.deepEqual(
+      round(f, undefined, { workspace }).map((t) => t.managerId),
+      CYCLE.filter((id) => id !== HALA),
+    );
+  }
+});
+
+test('a carried team keeps the first turn until it is served today', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture(2);
+    const pending = carry(f, 'rewaida');
+    // Even after another team was served, yesterday's unserved team is first.
+    assert.equal(next(f, [teamHistory(f, HALA)], { workspace, carryOver: pending })?.managerId, 'rewaida');
+    // Once it is served today the cycle moves on from it.
+    assert.equal(
+      next(f, [teamHistory(f, HALA), teamHistory(f, 'rewaida')], { workspace, carryOver: pending })?.managerId,
+      'shehata',
+    );
+  }
+});
+
+test('the carried team exposes yesterday\'s person only when they are present', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture(2);
+    const pending: CarryOver = { ...carry(f, 'rewaida'), salesId: 'rewaida-member-1', salesName: 'Rewaida member 1' };
+    const first = next(f, [], { workspace, carryOver: pending })!;
+    assert.equal(first.managerId, 'rewaida');
+    assert.equal(first.carriedSalesId, 'rewaida-member-1');
+    assert.equal(first.carriedSalesName, 'Rewaida member 1');
+
+    f.state['rewaida-member-1'].status = 'absent';
+    const absent = next(f, [], { workspace, carryOver: pending })!;
+    assert.equal(absent.managerId, 'rewaida');
+    assert.equal(absent.carriedSalesId, null);
+  }
+});
+
 test('a Rewaida carry-over continues through Shehata, Perry, Hala and Dina to Ahmed; a Dina one wraps to Ahmed first', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     const rew = carry(f, 'rewaida');
-    const rewPinned = carryOverTurn(rew, f.state, f.heads, f.managers, f.sales)!;
     assert.deepEqual(
-      round(f, rewPinned, { workspace, carryOver: rew }).map((t) => t.managerId),
+      round(f, undefined, { workspace, carryOver: rew }).map((t) => t.managerId),
       ['rewaida', 'shehata', 'perry', HALA, DINA, 'ahmed'],
     );
     const dina = carry(f, DINA);
-    const dinaPinned = carryOverTurn(dina, f.state, f.heads, f.managers, f.sales)!;
     assert.deepEqual(
-      round(f, dinaPinned, { workspace, carryOver: dina }).map((t) => t.managerId),
+      round(f, undefined, { workspace, carryOver: dina }).map((t) => t.managerId),
       [DINA, 'ahmed', 'rewaida', 'shehata', 'perry', HALA],
     );
   }
@@ -220,73 +345,37 @@ test('each of the six carried teams starts the next day before its successor in 
     const f = fixture();
     CYCLE.forEach((managerId, i) => {
       const pending = carry(f, managerId);
-      const pinned = carryOverTurn(pending, f.state, f.heads, f.managers, f.sales)!;
-      const predicted = round(f, pinned, { workspace, carryOver: pending });
+      const predicted = round(f, undefined, { workspace, carryOver: pending });
       const expected = Array.from({ length: CYCLE.length }, (_, offset) =>
         CYCLE[(i + offset) % CYCLE.length]);
       assert.deepEqual(predicted.map((t) => t.managerId), expected, `${workspace}: ${managerId}`);
-      assert.equal(predicted[0].salesId, pending.salesId);
-      assert.equal(predicted.filter((t) => t.salesId === pending.salesId).length, 1);
+      assert.equal(predicted[0].managerId, managerId);
+      assert.equal(predicted.filter((t) => t.managerId === managerId).length, 1);
     });
   }
 });
 
-test('an Ahmed carry-over is followed by Rewaida, and a Rewaida carry-over by Youssef', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    for (const [owner, successor] of [['ahmed', 'rewaida'], ['rewaida', 'shehata']] as const) {
-      const pending = carry(f, owner);
-      const pinned = carryOverTurn(pending, f.state, f.heads, f.managers, f.sales)!;
-      const predicted = round(f, pinned, { workspace, carryOver: pending });
-      assert.equal(predicted[0].managerId, owner);
-      assert.equal(predicted[1].managerId, successor);
-    }
-  }
-});
-
-test('a carried person is pinned once and is never repeated in the predicted queue', () => {
+test('an absent carried team stays first while a teammate is available, and the roster is manual', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture(2);
-    const pending = carry(f, 'rewaida');
-    const pinned = carryOverTurn(pending, f.state, f.heads, f.managers, f.sales)!;
-    const predicted = round(f, pinned, { workspace, carryOver: pending });
-    assert.equal(predicted[0].salesId, pending.salesId);
-    assert.equal(predicted.filter((t) => t.salesId === pending.salesId).length, 1);
-    assert.equal(new Set(predicted.map((t) => t.salesId)).size, predicted.length);
-    assert.equal(predicted.length, CYCLE.length * 2);
+    const pending: CarryOver = { ...carry(f, 'rewaida'), salesId: 'rewaida-member-1', salesName: 'Rewaida member 1' };
+    f.state['rewaida-member-1'].status = 'absent';
+    // The team keeps the slot; the person does not force the choice.
+    assert.deepEqual(
+      round(f, undefined, { workspace, carryOver: pending }).map((t) => t.managerId),
+      ['rewaida', 'shehata', 'perry', HALA, DINA, 'ahmed'],
+    );
+    assert.deepEqual(availableTeamMembers('rewaida', f.state, f.sales).map((s) => s.id), ['rewaida-member-2']);
   }
 });
 
-test('an absent carried person remains first and then the cycle continues from that team', () => {
+test('skipping the only member of the carried team moves the cycle on without losing the team order', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     const pending = carry(f, 'rewaida');
-    f.state[pending.salesId].status = 'absent';
-    const pinned = carryOverTurn(pending, f.state, f.heads, f.managers, f.sales)!;
-    const predicted = round(f, pinned, { workspace, carryOver: pending });
-    assert.equal(predicted[0].salesId, pending.salesId);
-    assert.deepEqual(predicted.map((t) => t.managerId), ['rewaida', 'shehata', 'perry', HALA, DINA, 'ahmed']);
-  }
-});
-
-test('a same-team substitute consumes the carried slot and the next team follows', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture(2);
-    const previous = teamHistory(f, 'rewaida');
-    previous.salesId = 'rewaida-member-2';
-    previous.substituted = true;
-    f.state[previous.salesId].status = 'busy';
-    assert.equal(next(f, [previous], { workspace, carryOver: carry(f) })?.managerId, 'shehata');
-  }
-});
-
-test('skipping an absent carried person continues after their team without using Head order', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    const pending = carry(f, 'rewaida');
-    const options = { workspace, carryOver: pending, skippedIds: [pending.salesId] };
+    const options = { workspace, carryOver: pending, skippedIds: ['rewaida-member-1'] };
     assert.equal(next(f, [], options)?.managerId, 'shehata');
-    assert.deepEqual(round(f, next(f, [], options), options).map((t) => t.managerId), [
+    assert.deepEqual(round(f, undefined, options).map((t) => t.managerId), [
       'shehata', 'perry', HALA, DINA, 'ahmed',
     ]);
   }
@@ -298,16 +387,18 @@ test('an unrelated assignment does not consume an unserved carry-over at day rol
     const pending = carry(f, 'rewaida');
     const unrelated = teamHistory(f, 'perry');
     const laterTurn = next(f, [unrelated], { workspace, carryOver: pending });
-    assert.equal(laterTurn?.managerId, HALA);
+    assert.equal(laterTurn?.managerId, 'rewaida');
     const rolled = carryOverForNewDay(pending, laterTurn, [unrelated], f.heads, workspace, 'new-day');
-    assert.equal(rolled?.salesId, pending.salesId);
+    assert.equal(rolled?.managerId, 'rewaida');
     const fresh = createNewDaySalesState(workspace, f.sales);
-    const stillPinned = carryOverTurn(rolled, fresh, f.heads, f.managers, f.sales);
-    assert.equal(stillPinned?.salesId, pending.salesId);
+    f.sales
+      .filter((s) => s.managerId === 'rewaida' && !s.isManager)
+      .forEach((s) => { fresh[s.id] = { ...fresh[s.id], status: 'available' }; });
+    assert.equal(computeNextTeam(fresh, [], f.managers, f.sales, f.heads, { carryOver: rolled })?.managerId, 'rewaida');
   }
 });
 
-test('a newly pending turn, not the last person served, is carried into the next day', () => {
+test('a newly pending turn, not the last team served, is carried into the next day', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     CYCLE.forEach((previousTeam, index) => {
@@ -316,85 +407,34 @@ test('a newly pending turn, not the last person served, is carried into the next
       assert.equal(pending?.managerId, CYCLE[(index + 1) % CYCLE.length]);
       const rolled = carryOverForNewDay(null, pending, history, f.heads, workspace, 'new-day');
       assert.equal(rolled?.managerId, CYCLE[(index + 1) % CYCLE.length]);
-      assert.notEqual(rolled?.salesId, history[0].salesId);
+      assert.equal(rolled?.salesId, '');
     });
   }
 });
 
-test('team-only carry cursors resume after the previous team when nobody is available', () => {
+test('a team carry with no pending turn resumes after the last served team', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     const previous = teamHistory(f, 'rewaida');
-    const cursor = carryOverForNewDay(null, null, [previous], f.heads, workspace, 'new-day')!;
-    assert.equal(cursor.salesId, '');
-    assert.equal(next(f, [], { workspace, carryOver: cursor })?.managerId, 'shehata');
-    assert.equal(carryOverTurn(cursor, f.state, f.heads, f.managers, f.sales), null);
+    const rolled = carryOverForNewDay(null, null, [previous], f.heads, workspace, 'new-day', f.managers)!;
+    // Carrying the team that just served would repeat it; the successor starts.
+    assert.equal(rolled.managerId, 'shehata');
+    assert.equal(rolled.salesId, '');
+    assert.equal(next(f, [], { workspace, carryOver: rolled })?.managerId, 'shehata');
   }
 });
 
-test('a team-only cursor survives an empty day without creating a phantom turn', () => {
+test('a team carry survives an empty day and starts the next day with that team', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
-    const cursor = { ...carry(f, 'rewaida'), salesId: '', salesName: '' };
+    const cursor = carry(f, 'rewaida');
     const rolled = carryOverForNewDay(cursor, null, [], f.heads, workspace, 'new-day');
     assert.deepEqual(rolled, cursor);
-    assert.equal(carryOverTurn(rolled, f.state, f.heads, f.managers, f.sales), null);
-  }
-});
-
-test('a team served today supersedes an older team-only carry cursor', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    const pendingCursor = { ...carry(f, 'ahmed'), salesId: '', salesName: '' };
-    assert.equal(next(f, [teamHistory(f, HALA)], { workspace, carryOver: pendingCursor })?.managerId, DINA);
+    assert.equal(next(f, [], { workspace, carryOver: rolled })?.managerId, 'rewaida');
   }
 });
 
 test('unavailable teams are skipped without changing the order of the remaining cycle', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture(2);
-    setTeamStatus(f, 'shehata', 'absent');
-    const withoutShehata = CYCLE.filter((id) => id !== 'shehata');
-    assert.deepEqual(round(f, undefined, { workspace }).map((t) => t.managerId), [
-      ...withoutShehata,
-      ...withoutShehata,
-    ]);
-  }
-});
-
-test('multiple unavailable teams are skipped while preserving Dina-to-Ahmed wraparound', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    setTeamStatus(f, HALA, 'absent');
-    setTeamStatus(f, DINA, 'busy');
-    assert.equal(next(f, [teamHistory(f, 'shehata')], { workspace })?.managerId, 'perry');
-    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, 'ahmed');
-    assert.equal(next(f, [teamHistory(f, DINA)], { workspace })?.managerId, 'ahmed');
-  }
-});
-
-test('a returning team member becomes eligible in the original team slot', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    setTeamStatus(f, HALA, 'busy');
-    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, DINA);
-    setTeamStatus(f, HALA, 'available');
-    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, HALA);
-  }
-});
-
-test('explicitly excluded people are skipped in current-turn and full-round calculations', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    const skippedIds = ['shehata-member-1', `${HALA}-member-1`];
-    assert.equal(next(f, [teamHistory(f, 'rewaida')], { workspace }, skippedIds)?.managerId, 'perry');
-    assert.deepEqual(round(f, undefined, { workspace, skippedIds }).map((t) => t.managerId), [
-      'ahmed', 'rewaida', 'perry', DINA,
-    ]);
-  }
-});
-
-test('all availability subsets preserve the fixed order from every cycle position in both workspaces', () => {
   for (const workspace of WORKSPACES) {
     for (let mask = 0; mask < 1 << CYCLE.length; mask++) {
       for (let previous = -1; previous < CYCLE.length; previous++) {
@@ -420,37 +460,6 @@ test('all availability subsets preserve the fixed order from every cycle positio
         );
       }
     }
-  }
-});
-
-test('within a team, fewer own turns precede attendance priority', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture(2);
-    f.state['ahmed-member-1'].walkCount = 2;
-    f.state['ahmed-member-2'].walkCount = 0;
-    assert.equal(next(f, [], { workspace })?.salesId, 'ahmed-member-2');
-    f.state['ahmed-member-1'].walkCount = 0;
-    assert.equal(next(f, [], { workspace })?.salesId, 'ahmed-member-1');
-  }
-});
-
-test('attendance counts and other teams check-in order cannot change fixed team order', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    f.state['ahmed-member-1'].walkCount = 99;
-    f.state['ahmed-member-1'].coverCount = 100;
-    f.state['ahmed-member-1'].checkInOrder = 1000;
-    assert.equal(next(f, [], { workspace })?.managerId, 'ahmed');
-  }
-});
-
-test('managers remain attendance-only and do not make an unavailable team eligible', () => {
-  for (const workspace of WORKSPACES) {
-    const f = fixture();
-    setTeamStatus(f, HALA, 'absent');
-    assert.equal(f.state[`${HALA}-self`].status, 'available');
-    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, DINA);
-    assert.ok(round(f, undefined, { workspace }).every((t) => !f.sales.find((s) => s.id === t.salesId)?.isManager));
   }
 });
 
@@ -485,7 +494,7 @@ test('one available team can take successive turns without an infinite loop', ()
     const f = fixture(2);
     CYCLE.filter((id) => id !== 'rewaida').forEach((id) => setTeamStatus(f, id, 'absent'));
     assert.equal(next(f, [teamHistory(f, 'rewaida')], { workspace })?.managerId, 'rewaida');
-    assert.deepEqual(round(f, undefined, { workspace }).map((t) => t.managerId), ['rewaida', 'rewaida']);
+    assert.deepEqual(round(f, undefined, { workspace }).map((t) => t.managerId), ['rewaida']);
   }
 });
 
@@ -544,9 +553,11 @@ test('rotation and predictions never mutate attendance, history, carry-over, or 
     const history = [teamHistory(f, 'rewaida')];
     const pending = carry(f);
     const before = structuredClone({ f, history, pending });
-    const pinned = carryOverTurn(pending, f.state, f.heads, f.managers, f.sales);
     next(f, history, { workspace, carryOver: pending });
-    round(f, pinned, { workspace, carryOver: pending });
+    predictFullRound(f.state, history, 'khaled', undefined, f.heads, f.managers, f.sales, {
+      workspace,
+      carryOver: pending,
+    });
     assert.deepEqual({ f, history, pending }, before);
   }
 });

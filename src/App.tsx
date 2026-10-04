@@ -31,13 +31,13 @@ import {
   HEADS as DEFAULT_HEADS,
   MANAGERS as DEFAULT_MANAGERS,
   SALES as DEFAULT_SALES,
-  computeNextTurn,
-  predictFullRound,
+  computeNextTeam,
+  teamOrderFrom,
+  availableTeamMembers,
   AUTOMATIC_TEAM_ORDER,
   usesFixedTeamRotation,
   carryOverForNewDay,
   createNewDaySalesState,
-  carryOverTurn,
   reconcileCounts,
   loadPersisted,
   savePersisted,
@@ -48,12 +48,12 @@ import {
 import type {
   Assignment,
   CarryOver,
-  ComputedTurn,
   HeadGroup,
   ManagerTeam,
   SalesPerson,
   SalesState,
   PersistedWalkin,
+  TeamTurn,
   UndoEntry,
   VisitType,
 } from './lib/walkin';
@@ -82,7 +82,7 @@ import {
 } from './lib/sync';
 import type { SyncConfig, SyncStatus } from './lib/sync';
 import { CurrentTurn } from './components/CurrentTurn';
-import type { SubstituteOption } from './components/CurrentTurn';
+import type { TeamMemberOption, UpcomingTeam } from './components/CurrentTurn';
 import { AttendanceBoard } from './components/AttendanceBoard';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ClientExcelBuilder } from './components/ClientExcelBuilder';
@@ -104,7 +104,8 @@ import { cn } from './utils/cn';
 
 interface DoneInfo {
   assignment: Assignment;
-  next: ComputedTurn | null;
+  /** Next team on turn — the sales is picked manually when that turn comes. */
+  next: TeamTurn | null;
 }
 
 type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
@@ -216,7 +217,7 @@ const NAV: { id: Tab; label: string; icon: typeof CalendarCheck }[] = [
 const TITLES: Record<Tab, { title: string; sub: string }> = {
   dashboard: { title: 'لوحة التحكم', sub: 'نظرة شاملة على حركة الـ Walk-In اليوم' },
   today: { title: 'الحضور', sub: 'سجّل حضور السيلز وتابع الحالة لحظياً' },
-  order: { title: 'الترتيب', sub: 'التناوب بنظام Head × Head وأولوية الحضور' },
+  order: { title: 'الترتيب', sub: 'الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم' },
   log: { title: 'السجل', sub: 'كل عمليات التوزيع التي تمت اليوم' },
   manage: { title: 'الهيكل', sub: 'إدارة الفرق والمزامنة بين الأجهزة' },
 };
@@ -243,7 +244,11 @@ function WalkInApp({
   const [heads, setHeads] = useState<HeadGroup[]>(boot.customHeads || DEFAULT_HEADS);
   const [managers, setManagers] = useState<ManagerTeam[]>(boot.customManagers || DEFAULT_MANAGERS);
   const [sales, setSales] = useState<SalesPerson[]>(boot.customSales || DEFAULT_SALES);
-  const [manualOrder, setManualOrder] = useState<string[]>(boot.manualOrder || []);
+  // Manual team order (manager IDs) — the queue is ordered by managers now.
+  const [manualOrder, setManualOrder] = useState<string[]>(() => {
+    const ids = new Set((boot.customManagers || DEFAULT_MANAGERS).map((m) => m.id));
+    return (boot.manualOrder || []).filter((id) => ids.has(id));
+  });
 
   const [salesState, setSalesState] = useState<Record<string, SalesState>>(boot.salesState);
   const [history, setHistory] = useState<Assignment[]>(boot.history);
@@ -254,7 +259,6 @@ function WalkInApp({
   const [lastResetAt, setLastResetAt] = useState<string | null>(boot.lastResetAt);
   const [clientLabel, setClientLabel] = useState('');
   const [visitType, setVisitType] = useState<VisitType>('walkin');
-  const [skippedIds, setSkippedIds] = useState<string[]>(boot.skippedIds || []);
   const [paused, setPaused] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneInfo | null>(null);
   const [tab, setTab] = useState<Tab>('dashboard');
@@ -335,7 +339,6 @@ function WalkInApp({
       customManagers: managers,
       customSales: sales,
       manualOrder,
-      skippedIds,
       undoStack,
     }),
     [
@@ -350,7 +353,6 @@ function WalkInApp({
       managers,
       sales,
       manualOrder,
-      skippedIds,
       undoStack,
     ],
   );
@@ -377,7 +379,6 @@ function WalkInApp({
     if (state.customManagers) setManagers(state.customManagers);
     if (state.customSales) setSales(state.customSales);
     if (Array.isArray(state.manualOrder)) setManualOrder(state.manualOrder);
-    if (Array.isArray(state.skippedIds)) setSkippedIds(state.skippedIds);
     if (Array.isArray(state.undoStack)) setUndoStack(state.undoStack);
     savePersisted(state, account);
     lastSavedStateRef.current = state;
@@ -649,8 +650,8 @@ function WalkInApp({
 
   // ── Rotation ──
   const rotationOptions = useMemo(
-    () => ({ workspace: account, carryOver, skippedIds }),
-    [account, carryOver, skippedIds],
+    () => ({ workspace: account, carryOver }),
+    [account, carryOver],
   );
   const effectiveStartingHead = useMemo(() => {
     if (!isFixedTeamWorkspace && history.length === 0 && carryOver?.headId) {
@@ -663,76 +664,98 @@ function WalkInApp({
     return startingHead;
   }, [isFixedTeamWorkspace, history.length, carryOver, heads, startingHead]);
 
-  // Yesterday's pending person is ALWAYS pinned first in the new day — even if
-  // still absent. A substitute is picked manually (بديل من نفس التيم) when needed.
-  const pinned: ComputedTurn | null = useMemo(() => {
-    if (paused || !carryOver?.salesId) return null;
-    if (skippedIds.includes(carryOver.salesId)) return null;
-    const present = salesState[carryOver.salesId]?.status === 'available';
-    // غائب واليوم بدأ فعلاً → الطابور يكمل؛ يرجع #1 تلقائياً فور تسجيل حضوره
-    if (!present && history.length > 0) return null;
-    return carryOverTurn(carryOver, salesState, heads, managers, sales);
-  }, [paused, history.length, carryOver, skippedIds, salesState, heads, managers, sales]);
-
-  const next: ComputedTurn | null = useMemo(() => {
-    if (paused) return null;
-    if (pinned) return pinned;
-    return computeNextTurn(salesState, history, effectiveStartingHead, skippedIds, heads, managers, sales, rotationOptions);
-  }, [paused, pinned, salesState, history, effectiveStartingHead, skippedIds, heads, managers, sales, rotationOptions]);
-
-  const nextIsPresent = !!next && salesState[next.salesId]?.status === 'available';
-
-  const computedRound = useMemo(
-    () => (paused ? [] : predictFullRound(salesState, history, effectiveStartingHead, next, heads, managers, sales, rotationOptions)),
-    [salesState, history, effectiveStartingHead, next, paused, heads, managers, sales, rotationOptions],
+  // ── الدور على التيم (اختيار السيلز يدوي) ──
+  // المحرّك يحدد التيم اللي عليه الدور فقط، ومين يقعد مع العميل يتم اختياره
+  // يدوياً من نفس التيم — فلا يوجد أي اسم سيلز مقترح تلقائياً.
+  const nextTeam: TeamTurn | null = useMemo(
+    () => (paused ? null : computeNextTeam(salesState, history, managers, sales, heads, rotationOptions)),
+    [paused, salesState, history, managers, sales, heads, rotationOptions],
   );
 
-  const fullRound = useMemo(() => {
-    if (manualOrder.length === 0) return computedRound;
+  /** كل أعضاء التيم اللي عليه الدور (بدون المدير) مع حالتهم، والأولوية للمتاحين. */
+  const teamRoster: TeamMemberOption[] = useMemo(() => {
+    if (!nextTeam) return [];
+    const priority = new Map(
+      availableTeamMembers(nextTeam.managerId, salesState, sales).map((s, i) => [s.id, i]),
+    );
+    const weight = (status: TeamMemberOption['status']) =>
+      status === 'available' ? 0 : status === 'busy' ? 1 : 2;
+    return sales
+      .filter((s) => s.managerId === nextTeam.managerId && !s.isManager)
+      .map((s) => {
+        const st = salesState[s.id];
+        const status: TeamMemberOption['status'] = st?.status ?? 'absent';
+        return {
+          id: s.id,
+          name: s.name,
+          status,
+          walkCount: st?.walkCount ?? 0,
+          coverCount: st?.coverCount ?? 0,
+          checkInOrder: st?.checkInOrder ?? null,
+          carried: nextTeam.carriedSalesId === s.id,
+        };
+      })
+      .sort(
+        (a, b) =>
+          weight(a.status) - weight(b.status) ||
+          (priority.get(a.id) ?? 0) - (priority.get(b.id) ?? 0),
+      );
+  }, [nextTeam, sales, salesState]);
+
+  /** ترتيب الفرق (بالمديرين) بدءاً من التيم اللي عليه الدور. */
+  const naturalTeamOrder = useMemo(
+    () => teamOrderFrom(managers, nextTeam?.managerId),
+    [managers, nextTeam],
+  );
+
+  const teamRound = useMemo(() => {
+    if (manualOrder.length === 0) return naturalTeamOrder;
     const rank = new Map(manualOrder.map((id, i) => [id, i]));
-    const known = computedRound
-      .filter((t) => rank.has(t.salesId))
-      .sort((a, b) => (rank.get(a.salesId) ?? 0) - (rank.get(b.salesId) ?? 0));
-    const unknown = computedRound.filter((t) => !rank.has(t.salesId));
+    const known = naturalTeamOrder
+      .filter((t) => rank.has(t.id))
+      .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+    const unknown = naturalTeamOrder.filter((t) => !rank.has(t.id));
     return [...known, ...unknown];
-  }, [computedRound, manualOrder]);
+  }, [naturalTeamOrder, manualOrder]);
+
+  /** هل يوجد ترتيب يدوي فعّال فعلاً (يتجاهل أي أثر قديم بالاسم القديم للسيلز)? */
+  const manualOrderActive = useMemo(
+    () => teamRound.some((team, index) => team.id !== naturalTeamOrder[index]?.id),
+    [teamRound, naturalTeamOrder],
+  );
 
   const moveInOrder = (fromIndex: number, dir: -1 | 1) => {
     const to = fromIndex + dir;
-    if (to < 0 || to >= fullRound.length) return;
-    const ids = fullRound.map((t) => t.salesId);
+    if (to < 0 || to >= teamRound.length) return;
+    const ids = teamRound.map((t) => t.id);
     const [item] = ids.splice(fromIndex, 1);
     ids.splice(to, 0, item);
     setManualOrder(ids);
-    toast('success', dir === -1 ? 'تم تقديم الشخص في الترتيب' : 'تم تأخير الشخص في الترتيب');
+    toast('success', dir === -1 ? 'تم تقديم التيم في الترتيب' : 'تم تأخير التيم في الترتيب');
   };
 
   const resetOrder = () => {
     setManualOrder([]);
-    toast('info', 'تمت العودة للترتيب التلقائي');
+    toast('info', 'تمت العودة لترتيب الفرق التلقائي');
   };
 
-  const upcoming = useMemo(() => fullRound.slice(1, 5), [fullRound]);
-
-  const substituteOptions: SubstituteOption[] = useMemo(() => {
-    if (!next) return [];
-    return sales
-      .filter((s) => s.managerId === next.managerId && s.id !== next.salesId && salesState[s.id]?.status === 'available')
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        walkCount: salesState[s.id]?.walkCount ?? 0,
-        coverCount: salesState[s.id]?.coverCount ?? 0,
-        checkInOrder: salesState[s.id]?.checkInOrder ?? null,
-        isManager: s.isManager,
+  /** الفرق الجاية اللي عليها الدور فعلاً (اللي لها سيلز متاح). */
+  const upcomingTeams: UpcomingTeam[] = useMemo(() => {
+    const nameOfHead = (headId: string) => heads.find((h) => h.id === headId)?.name ?? headId;
+    return naturalTeamOrder
+      .slice(1)
+      .map((team) => ({
+        managerId: team.id,
+        managerName: team.name,
+        headName: nameOfHead(team.headId),
+        available: availableTeamMembers(team.id, salesState, sales).length,
       }))
-      .sort(
-        (a, b) =>
-          Number(Boolean(b.isManager)) - Number(Boolean(a.isManager)) ||
-          a.walkCount - b.walkCount ||
-          (a.checkInOrder ?? 9999) - (b.checkInOrder ?? 9999),
-      );
-  }, [next, sales, salesState]);
+      .filter((team) => team.available > 0)
+      .slice(0, 4);
+  }, [naturalTeamOrder, salesState, sales, heads]);
+
+  const availableForTurn = teamRoster.filter((m) => m.status === 'available').length;
+
 
   const totalToday = history.length;
   const presentCount = sales.filter((s) => salesState[s.id]?.status !== 'absent').length;
@@ -817,7 +840,6 @@ function WalkInApp({
         ...prev,
         [id]: { ...prev[id], status: 'absent', checkInOrder: null, checkInTime: null },
       }));
-      setSkippedIds((prev) => prev.filter((x) => x !== id));
     }
   };
 
@@ -826,7 +848,12 @@ function WalkInApp({
   };
 
   // ── Assignment ──
-  const confirmWith = (salesId: string, substituted: boolean, originalName?: string) => {
+  /**
+   * Confirm the client with the sales chosen MANUALLY from the team on turn.
+   * There is no substitute concept any more: whoever is picked from the team is
+   * the person serving, and the team's turn is what the queue advances on.
+   */
+  const confirmWith = (salesId: string) => {
     const s = sales.find((x) => x.id === salesId);
     if (!s) return;
     const mgr = managers.find((m) => m.id === s.managerId) || { id: s.managerId, name: s.managerId };
@@ -843,13 +870,12 @@ function WalkInApp({
       headName: head.name,
       time: new Date().toISOString(),
       clientLabel: clientLabel.trim(),
-      substituted,
-      originalSalesName: originalName,
+      substituted: false,
       visitType,
     };
 
-    // Compact undo record: restores the person's exact queue position, the
-    // manual order, the skipped list and yesterday's carry-over.
+    // Compact undo record: restores the person's state, the manual team order
+    // and yesterday's carried turn.
     const entry: UndoEntry = {
       personId: salesId,
       prevState: salesState[salesId]
@@ -858,7 +884,7 @@ function WalkInApp({
           : (JSON.parse(JSON.stringify(salesState[salesId])) as SalesState)
         : { status: 'available', checkInOrder: null, checkInTime: null, walkCount: 0, coverCount: 0, lastServedAt: null },
       manualOrder: [...manualOrder],
-      skippedIds: [...skippedIds],
+      skippedIds: [],
       carryOver: carryOver ?? null,
       seq,
       counter,
@@ -871,32 +897,25 @@ function WalkInApp({
       [salesId]: {
         ...salesState[salesId],
         status: 'busy',
-        // A substitute keeps their own turn: covering a teammate counts as a
-        // cover (stats only) and NEVER touches walkCount (queue fairness).
-        walkCount: (salesState[salesId]?.walkCount ?? 0) + (substituted ? 0 : 1),
-        coverCount: (salesState[salesId]?.coverCount ?? 0) + (substituted ? 1 : 0),
+        // The chosen sales served their own turn — this is what keeps the
+        // rotation inside the team fair.
+        walkCount: (salesState[salesId]?.walkCount ?? 0) + 1,
         lastServedAt: new Date().toISOString(),
       },
     };
-    const nextAfter = computeNextTurn(newSalesState, newHistory, effectiveStartingHead, [], heads, managers, sales, {
-      ...rotationOptions,
-      skippedIds: [], // Confirming a turn clears the skip list below.
+    // دور أمس المرحَّل يُستهلك بمجرد خدمة التيم الخاص به.
+    const carryAfter = carryOver && carryOver.managerId === mgr.id ? null : carryOver;
+    const nextAfter = computeNextTeam(newSalesState, newHistory, managers, sales, heads, {
+      workspace: account,
+      carryOver: carryAfter,
     });
     setSeq(n);
     setHistory(newHistory);
     setSalesState(newSalesState);
-    setSkippedIds([]);
+    setCarryOver(carryAfter);
     setClientLabel('');
     setVisitType('walkin');
-    setManualOrder((prev) =>
-      prev.length > 0
-        ? prev.filter((id) => id !== (substituted ? next?.salesId : salesId))
-        : prev,
-    );
-    // الدور المرحَّل يُستهلك فقط عند خدمة صاحبه — مباشرة أو ببديل من نفس التيم
-    if (carryOver?.salesId && (salesId === carryOver.salesId || (substituted && next?.salesId === carryOver.salesId))) {
-      setCarryOver(null);
-    }
+    setManualOrder((prev) => (prev.length > 0 ? prev.filter((id) => id !== mgr.id) : prev));
     setAssignOpen(false);
     setDoneInfo({ assignment, next: nextAfter });
   };
@@ -908,15 +927,13 @@ function WalkInApp({
 
     if (entry) {
       // Full restore: the undone person returns to the exact queue position,
-      // together with the manual order, skipped names and yesterday's pin.
-      // Counters are then reconciled from the restored history so a cover
-      // never leaks into the person's own-turn count.
+      // together with the manual team order and yesterday's carried turn.
+      // Counters are reconciled from the restored history.
       const restoredHistory = history.slice(0, -1);
       setUndoStack((prev) => prev.slice(0, -1));
       setHistory(restoredHistory);
       setSalesState((prev) => reconcileCounts({ ...prev, [entry.personId]: entry.prevState }, restoredHistory));
       setManualOrder(entry.manualOrder);
-      setSkippedIds(entry.skippedIds);
       setCarryOver(entry.carryOver);
       setSeq(entry.seq);
       setCounter(entry.counter);
@@ -939,24 +956,24 @@ function WalkInApp({
       return reconcileCounts(nextState, restoredHistory);
     });
     setSeq((v) => Math.max(0, v - 1));
-    setManualOrder((prev) => (prev.includes(last.salesId) ? prev : [last.salesId, ...prev]));
-    setSkippedIds((prev) => prev.filter((x) => x !== last.salesId));
+    setManualOrder((prev) => (prev.includes(last.managerId) ? prev : [last.managerId, ...prev]));
     toast('info', `تم التراجع عن ${last.salesName}`);
   };
 
   const resetDay = () => {
     if (!window.confirm('بدء يوم جديد؟ سيتم مسح الحضور والسجل وترحيل الدور المتبقي.')) return;
-    // Keep an unserved carried person even if an unrelated turn was assigned,
-    // skipped, paused, or the person is still absent. Otherwise carry tomorrow's
-    // current pending turn (or a team-only cycle cursor when nobody is available).
-    const pending = paused ? null : next;
-    setCarryOver(carryOverForNewDay(carryOver, pending, history, heads, account));
+    // ترحيل دور التيم المتبقي: التيم اللي عليه الدور لم يُخدم بعد يبدأ اليوم الجديد،
+    // وإلا يبدأ اليوم من التيم التالي لآخر تيم اتخدم في الدورة.
+    const pending = paused ? null : nextTeam;
+    const servedToday = carryOver?.managerId
+      ? history.some((a) => a.managerId === carryOver.managerId)
+      : false;
+    setCarryOver(carryOverForNewDay(servedToday ? null : carryOver, pending, history, heads, account, undefined, managers));
     // Keep saved custom-team members in both RESTA and SITE's fresh attendance map.
     setSalesState(createNewDaySalesState(account, sales));
     setHistory([]);
     setCounter(0);
     setSeq(0);
-    setSkippedIds([]);
     setClientLabel('');
     setManualOrder([]);
     setUndoStack([]);
@@ -1140,7 +1157,7 @@ function WalkInApp({
                     <div className="p-5">
                       <SectionTitle
                         title="الدور الحالي"
-                        subtitle="المقترح للجلوس مع العميل القادم"
+                        subtitle="التيم اللي عليه الدور — تختار السيلز بنفسك"
                         icon={<Crown className="size-4.5" strokeWidth={2.1} />}
                       />
                       {paused ? (
@@ -1148,11 +1165,11 @@ function WalkInApp({
                           <Pause className="mx-auto size-6 text-amber-600" />
                           <p className="mt-2 text-[14px] font-extrabold text-ink-900">الترتيب متوقف مؤقتاً</p>
                         </div>
-                      ) : !next ? (
+                      ) : !nextTeam ? (
                         <EmptyState
                           icon={<UserCheck className="size-6" />}
-                          title="لا يوجد سيلز متاح"
-                          description="سجّل الحضور من شاشة الحضور ليظهر الدور."
+                          title="لا يوجد تيم متاح"
+                          description="سجّل الحضور من شاشة الحضور ليظهر دور التيم."
                           action={
                             <button onClick={() => go('today')} className="btn btn-secondary">
                               الذهاب للحضور
@@ -1162,30 +1179,27 @@ function WalkInApp({
                       ) : (
                         <>
                           <div className="flex items-center gap-3 rounded-2xl border border-ink-100 bg-ink-50/70 p-4">
-                            <span
-                              className={cn(
-                                'grid size-12 shrink-0 place-items-center rounded-2xl text-[16px] font-black text-white',
-                                nextIsPresent ? 'bg-emerald-500 pulse-ring' : 'bg-ink-300',
-                              )}
-                            >
-                              {next.salesName.slice(0, 2)}
+                            <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-brand-600 pulse-ring text-[15px] font-black text-white">
+                              {nextTeam.managerName.slice(0, 2)}
                             </span>
                             <div className="min-w-0 flex-1">
                               <p className="truncate font-display text-[20px] font-black leading-tight text-ink-900">
-                                {next.salesName}
+                                تيم {nextTeam.managerName}
                               </p>
                               <p className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                                <span className="badge badge-gray">تيم {next.managerName}</span>
-                                <span className="badge badge-red">{next.headName}</span>
-                                <span className={cn('badge', nextIsPresent ? 'badge-green' : 'badge-amber')}>
-                                  {nextIsPresent ? 'حاضر' : 'لم يحضر'}
+                                <span className="badge badge-red">{nextTeam.headName}</span>
+                                <span className="badge badge-green">
+                                  {availableForTurn} سيلز متاح للاختيار
                                 </span>
+                                {nextTeam.carriedSalesName && (
+                                  <span className="badge badge-amber">دور أمس: {nextTeam.carriedSalesName}</span>
+                                )}
                               </p>
                             </div>
                           </div>
                           <button onClick={() => setAssignOpen(true)} className="btn btn-primary mt-3 w-full py-3.5">
                             <UserCheck className="size-5" />
-                            إسناد العميل الآن
+                            اختر السيلز وابدأ المقابلة
                           </button>
                         </>
                       )}
@@ -1309,30 +1323,30 @@ function WalkInApp({
                     <span
                       className={cn(
                         'grid size-11 shrink-0 place-items-center rounded-2xl text-white',
-                        nextIsPresent ? 'bg-emerald-500' : 'bg-ink-300',
+                        nextTeam ? 'bg-brand-600' : 'bg-ink-300',
                       )}
                     >
                       <Crown className="size-5" strokeWidth={2.2} />
                     </span>
                     <div className="min-w-0">
-                      <p className="text-[11px] font-extrabold text-brand-600">الدور الحالي</p>
+                      <p className="text-[11px] font-extrabold text-brand-600">الدور الحالي — على التيم</p>
                       <p className="truncate font-display text-[17px] font-black text-ink-900">
-                        {next?.salesName ?? 'لا يوجد متاح'}
+                        {nextTeam ? `تيم ${nextTeam.managerName}` : 'لا يوجد تيم متاح'}
                       </p>
                       <p className="truncate text-[11.5px] font-semibold text-ink-400">
-                        {!next
-                          ? 'سجّل الحضور ليظهر الدور'
-                          : `تيم ${next.managerName} · ${nextIsPresent ? 'حاضر' : 'لم يحضر بعد'}`}
+                        {!nextTeam
+                          ? 'سجّل الحضور ليظهر دور التيم'
+                          : `${nextTeam.headName} · اختر السيلز من التيم يدوياً (${availableForTurn} متاح)`}
                       </p>
                     </div>
                   </div>
                   <span
                     className={cn(
                       'me-4 shrink-0 rounded-xl px-4 py-2.5 text-[13px] font-black',
-                      nextIsPresent ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-400',
+                      nextTeam ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-400',
                     )}
                   >
-                    إسناد
+                    اختيار السيلز
                   </span>
                 </button>
 
@@ -1389,15 +1403,15 @@ function WalkInApp({
               <div className="space-y-4">
                 <section className="surface anim-fade-up p-4">
                   <SectionTitle
-                    title="قائمة الترتيب"
-                    subtitle={paused ? 'الترتيب متوقف مؤقتاً' : `${fullRound.length} في الطابور`}
+                    title="ترتيب المديرين"
+                    subtitle={paused ? 'الترتيب متوقف مؤقتاً' : `${teamRound.length} فرق في الدورة`}
                     icon={<ListOrdered className="size-4.5" strokeWidth={2.1} />}
                     action={
                       <div className="flex items-center gap-1.5">
-                        {manualOrder.length > 0 && (
+                        {manualOrderActive && (
                           <button
                             onClick={resetOrder}
-                            title="العودة للترتيب التلقائي"
+                            title="العودة لترتيب الفرق التلقائي"
                             className="grid size-9 place-items-center rounded-lg border border-ink-200 bg-white text-ink-400 transition hover:border-brand-300 hover:text-brand-600"
                           >
                             <RotateReset className="size-4" />
@@ -1417,11 +1431,11 @@ function WalkInApp({
                       <p className="mt-2 font-display text-[15px] font-extrabold text-ink-900">الترتيب متوقف مؤقتاً</p>
                       <p className="mt-1 text-[12px] font-medium text-ink-400">اضغط استئناف لعرض الدور</p>
                     </div>
-                  ) : !next ? (
+                  ) : teamRound.length === 0 ? (
                     <EmptyState
                       icon={<ListOrdered className="size-6" />}
                       title="لا يوجد ترتيب حالياً"
-                      description="سجّل حضور السيلز من شاشة الحضور ليظهر الدور."
+                      description="سجّل حضور السيلز من شاشة الحضور ليظهر دور التيم."
                       action={
                         <button onClick={() => go('today')} className="btn btn-secondary">
                           الذهاب للحضور
@@ -1431,91 +1445,96 @@ function WalkInApp({
                   ) : (
                     <div className="space-y-2">
                       <p className="mb-1 rounded-lg bg-ink-50 px-3 py-2 text-[11.5px] font-semibold text-ink-500">
-                        يمكنك تعديل الترتيب يدوياً بالأسهم. الشخص الأول لا يُؤخَّر إلا يدوياً.
+                        الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم عند الدور. يمكنك تعديل ترتيب الفرق بالأسهم.
                       </p>
-                      {busyList
-                        .filter((s) => {
-                          const lastFor = [...history].reverse().find((a) => a.salesId === s.id);
-                          return lastFor?.substituted === true;
-                        })
-                        .map((s) => (
-                          <div
-                            key={s.id}
-                            className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5"
-                          >
-                            <span className="relative flex size-2.5 shrink-0">
-                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
-                              <span className="relative inline-flex size-2.5 rounded-full bg-amber-500" />
-                            </span>
-                            <p className="text-[12px] font-bold text-amber-800">
-                              {s.name} مشغول بتغطية زميل — دوره الأصلي محفوظ حسب حضوره
-                            </p>
-                          </div>
-                        ))}
-                      {fullRound.map((person, index) => {
-                        const isPresent = salesState[person.salesId]?.status !== 'absent';
+                      {teamRound.map((team, index) => {
+                        const members = sales.filter((s) => s.managerId === team.id && !s.isManager);
+                        const membersAvailable = members.filter((s) => salesState[s.id]?.status === 'available').length;
+                        const headName = heads.find((h) => h.id === team.headId)?.name ?? team.headId;
                         return (
                           <div
-                            key={`${person.salesId}-${index}`}
+                            key={team.id}
                             className={cn(
-                              'flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-right transition',
+                              'rounded-xl border px-3 py-2.5 transition',
                               index === 0
                                 ? 'border-brand-200 bg-brand-50/60 shadow-[0_4px_12px_-6px_rgba(227,6,19,0.3)]'
                                 : 'border-ink-100 bg-white hover:border-ink-200',
                             )}
                           >
-                            <button
-                              type="button"
-                              onClick={() => index === 0 && setAssignOpen(true)}
-                              className={cn(
-                                'tnum grid size-9 shrink-0 cursor-pointer place-items-center rounded-lg text-[14px] font-black',
-                                index === 0 ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-500',
-                              )}
-                              aria-label={`الترتيب ${index + 1}`}
-                            >
-                              {index + 1}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => index === 0 && setAssignOpen(true)}
-                              className="min-w-0 flex-1 text-right"
-                            >
-                              <p className="flex items-center gap-1.5 truncate text-[14.5px] font-extrabold text-ink-900">
-                                <span
-                                  className={cn(
-                                    'inline-block size-2 shrink-0 rounded-full',
-                                    isPresent ? 'bg-emerald-500' : 'bg-ink-200',
-                                  )}
-                                />
-                                <span className="truncate">{person.salesName}</span>
-                              </p>
-                              <p className="mt-0.5 truncate text-[11px] font-semibold text-ink-400">
-                                تيم {person.managerName} · {person.headName}
-                                {index === 0 ? ' · الدور الحالي' : ''}
-                                {!isPresent ? ' · لم يحضر' : ''}
-                              </p>
-                            </button>
-
-                            <div className="flex shrink-0 flex-col">
+                            <div className="flex items-center gap-2">
                               <button
                                 type="button"
-                                onClick={() => moveInOrder(index, -1)}
-                                disabled={index <= 1}
-                                aria-label="تقديم"
-                                className="grid size-7 place-items-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600 disabled:opacity-30"
+                                onClick={() => index === 0 && setAssignOpen(true)}
+                                className={cn(
+                                  'tnum grid size-9 shrink-0 cursor-pointer place-items-center rounded-lg text-[14px] font-black',
+                                  index === 0 ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-500',
+                                )}
+                                aria-label={`الترتيب ${index + 1}`}
                               >
-                                <ChevronUp className="size-4" strokeWidth={2.4} />
+                                {index + 1}
                               </button>
                               <button
                                 type="button"
-                                onClick={() => moveInOrder(index, 1)}
-                                disabled={index >= fullRound.length - 1}
-                                aria-label="تأخير"
-                                className="grid size-7 place-items-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600 disabled:opacity-30"
+                                onClick={() => index === 0 && setAssignOpen(true)}
+                                className="min-w-0 flex-1 text-right"
                               >
-                                <ChevronDown className="size-4" strokeWidth={2.4} />
+                                <p className="flex items-center gap-1.5 truncate text-[14.5px] font-extrabold text-ink-900">
+                                  <span
+                                    className={cn(
+                                      'inline-block size-2 shrink-0 rounded-full',
+                                      membersAvailable > 0 ? 'bg-emerald-500' : 'bg-ink-200',
+                                    )}
+                                  />
+                                  <span className="truncate">تيم {team.name}</span>
+                                </p>
+                                <p className="mt-0.5 truncate text-[11px] font-semibold text-ink-400">
+                                  {headName}
+                                  {index === 0 ? ' · الدور الحالي' : ''}
+                                  {membersAvailable === 0
+                                    ? ' · لا يوجد متاح — يُتخطّى'
+                                    : ` · متاح ${membersAvailable}/${members.length}`}
+                                </p>
                               </button>
+                              <div className="flex shrink-0 flex-col">
+                                <button
+                                  type="button"
+                                  onClick={() => moveInOrder(index, -1)}
+                                  disabled={index <= 1}
+                                  aria-label="تقديم التيم"
+                                  className="grid size-7 place-items-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600 disabled:opacity-30"
+                                >
+                                  <ChevronUp className="size-4" strokeWidth={2.4} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => moveInOrder(index, 1)}
+                                  disabled={index >= teamRound.length - 1}
+                                  aria-label="تأخير التيم"
+                                  className="grid size-7 place-items-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600 disabled:opacity-30"
+                                >
+                                  <ChevronDown className="size-4" strokeWidth={2.4} />
+                                </button>
+                              </div>
                             </div>
+                            {members.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5 border-t border-ink-100/80 pt-2">
+                                {members.map((s) => {
+                                  const st = salesState[s.id]?.status ?? 'absent';
+                                  return (
+                                    <span
+                                      key={s.id}
+                                      className={cn(
+                                        'badge',
+                                        st === 'available' ? 'badge-green' : st === 'busy' ? 'badge-amber' : 'badge-gray',
+                                      )}
+                                    >
+                                      {s.name}
+                                      {st === 'busy' ? ' · مشغول' : st === 'absent' ? ' · لم يحضر' : ''}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1532,7 +1551,7 @@ function WalkInApp({
                   {isFixedTeamWorkspace ? (
                     <div className="space-y-2 rounded-xl bg-ink-50 p-3 text-[12px] font-semibold leading-relaxed text-ink-500">
                       <p dir="ltr">{AUTOMATIC_TEAM_ORDER.map((team) => team.name).join(' → ')} → …</p>
-                      <p>هذا ترتيب تلقائي ثابت في RESTA وSITE. الدور المرحّل يبدأ أولاً، ثم تستمر الدورة من الفريق التالي. أي فريق دون سيلز متاح يُتخطّى دون تغيير ترتيب باقي الفرق.</p>
+                      <p>يبدأ الدور من التيم المرحّل من أمس، ثم تستمر الدورة بالترتيب. أي تيم دون سيلز متاح يُتخطّى تلقائياً دون تغيير ترتيب باقي الفرق — والسيلز يُختار يدوياً من التيم عند دوره.</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">
@@ -1688,19 +1707,14 @@ function WalkInApp({
           </div>
         ) : (
           <CurrentTurn
-            next={next}
-            upcoming={upcoming}
+            team={nextTeam}
+            members={teamRoster}
+            upcoming={upcomingTeams}
             clientLabel={clientLabel}
             setClientLabel={setClientLabel}
             visitType={visitType}
             setVisitType={setVisitType}
-            onConfirm={() => next && nextIsPresent && confirmWith(next.salesId, false)}
-            nextIsPresent={nextIsPresent}
-            onSubstitute={(id) => next && confirmWith(id, true, next.salesName)}
-            onSkip={() => next && setSkippedIds((prev) => [...prev, next.salesId])}
-            onResetSkips={() => setSkippedIds([])}
-            skippedCount={skippedIds.length}
-            substituteOptions={substituteOptions}
+            onConfirm={(salesId) => confirmWith(salesId)}
             totalToday={totalToday}
           />
         )}

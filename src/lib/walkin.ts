@@ -1,4 +1,9 @@
-// ─── Amer Group · Walk-In rotation engine (Head & Head + attendance priority) ───
+// ─── Amer Group · Walk-In rotation engine (team turns + manual sales choice) ───
+//
+// SITE and RESTA rotate by TEAM (manager): the cycle decides whose team is next
+// and the sales who sits with the client is picked manually from that team.
+// The Head × Head person-level engine below is kept only for unspecified
+// workspaces (no such workspace ships today) and for its unit tests.
 
 export interface HeadGroup {
   id: string;
@@ -59,6 +64,10 @@ export interface Assignment {
 }
 
 export interface ComputedTurn {
+  /**
+   * Empty string in SITE/RESTA: the turn belongs to a TEAM there, and the sales
+   * who sits with the client is chosen manually from that team (`TeamTurn`).
+   */
   salesId: string;
   salesName: string;
   managerId: string;
@@ -69,6 +78,34 @@ export interface ComputedTurn {
   headAr: string;
   reason: string;
   isFallback: boolean;
+  /** Yesterday's carried person — only when their team is on turn and present. */
+  carriedSalesId?: string | null;
+  carriedSalesName?: string | null;
+}
+
+/** The minimum identity of any pending turn (person-level or team-level). */
+export interface TurnIdentity {
+  managerId: string;
+  managerName: string;
+  headId: string;
+  headName: string;
+}
+
+/**
+ * A turn that belongs to a TEAM (manager) — SITE & RESTA.
+ *
+ * The rotation decides WHICH manager's team is next; the sales who sits with
+ * the client is picked manually from that team, so no sales name is ever
+ * proposed by the engine (only the roster to choose from).
+ */
+export interface TeamTurn extends TurnIdentity {
+  managerAr: string;
+  headAr: string;
+  reason: string;
+  isFallback: boolean;
+  /** Yesterday's carried person, when their team is on turn and they are present. */
+  carriedSalesId: string | null;
+  carriedSalesName: string | null;
 }
 
 // ───────────────────────── Static org chart ─────────────────────────
@@ -157,6 +194,14 @@ export function reconcileCounts(
   return out;
 }
 
+/**
+ * Yesterday's unserved turn.
+ *
+ * `managerId` is the team whose turn is still pending — it keeps the first slot
+ * in the new day until that team is served. `salesId` is kept for legacy
+ * person-level carries; the current flow carries the TEAM only (the sales is
+ * chosen manually when the turn comes).
+ */
 export interface CarryOver {
   salesId: string;
   salesName: string;
@@ -308,8 +353,11 @@ export function savePersisted(p: PersistedWalkin, accountOverride?: string): voi
 
 // ───────────────────────── Rotation engine ─────────────────────────
 //
-// RESTA and SITE use one fixed team cycle, independent of Heads and attendance
-// order between teams. Other (unspecified) workspaces retain the original rules:
+// RESTA and SITE use one fixed TEAM cycle (see `computeNextTeam`): the manager
+// whose team is on turn is decided here, and the sales is chosen manually from
+// that team — no sales name is ever proposed for those workspaces.
+//
+// Other (unspecified) workspaces retain the original Head × Head rules:
 //  1. Alternate Khaled's side with the other Heads; use attendance within a side.
 //  2. A served team/person falls behind in its existing fairness ordering.
 //  3. Yesterday's pending person is pinned first (handled by the caller); if absent,
@@ -521,12 +569,181 @@ function automaticTeamIndex(managerId: string, managerName: string): number {
   );
 }
 
+// ───────────── Team (manager) turns — SITE ⇄ RESTA ─────────────
+//
+// In both workspaces the turn belongs to a TEAM: one fixed cycle decides whose
+// team is next, and the sales who sits with the client is picked MANUALLY from
+// that team's roster. The engine therefore never proposes a sales name — it
+// only decides the team, so nothing here can be mistaken for an assignment.
+
+/** The six cycle slots resolved against the live org (custom IDs, saved names). */
+function resolveCycle(managersList: ManagerTeam[]): (ManagerTeam | null)[] {
+  return AUTOMATIC_TEAM_ORDER.map(
+    (team, index) =>
+      managersList.find((m) => m.id === team.id) ??
+      managersList.find((m) => automaticTeamIndex(m.id, m.name) === index) ??
+      null,
+  );
+}
+
+/** Slot of a manager inside the cycle — resolved by id first, then by saved name. */
+function cycleIndexOf(cycle: (ManagerTeam | null)[], managerId: string, managerName: string): number {
+  const byId = cycle.findIndex((team) => team?.id === managerId);
+  return byId >= 0 ? byId : automaticTeamIndex(managerId, managerName);
+}
+
 /**
- * Start at the team following today's most recently served team. When there is
- * no history, a carried turn's team supplies the cursor; the caller separately
- * pins that person at the front. Custom team IDs are preserved and resolved by
- * the saved team name, while a missing team simply has no candidates in its slot.
+ * Members of one team who are present and free — most deserving first
+ * (fewest own turns, then earliest check-in). This is only the ORDER of the
+ * manual picker; it never picks a person by itself.
  */
+export function availableTeamMembers(
+  managerId: string,
+  salesState: Record<string, SalesState>,
+  salesList: SalesPerson[] = SALES,
+  excludeIds: string[] = [],
+): SalesPerson[] {
+  return salesList
+    .filter(
+      (s) =>
+        !s.isManager &&
+        s.managerId === managerId &&
+        salesState[s.id]?.status === 'available' &&
+        !excludeIds.includes(s.id),
+    )
+    .sort((a, b) => sortByAttendance(a, b, salesState));
+}
+
+function teamTurn(
+  team: ManagerTeam,
+  reason: string,
+  isFallback: boolean,
+  carriedPerson: SalesPerson | null,
+  headsList: HeadGroup[] = HEADS,
+): TeamTurn {
+  const head =
+    headsList.find((h) => h.id === team.headId) ||
+    { id: team.headId, name: team.headId, ar: team.headId };
+  return {
+    managerId: team.id,
+    managerName: team.name,
+    managerAr: team.ar,
+    headId: head.id,
+    headName: head.name,
+    headAr: head.ar,
+    reason,
+    isFallback,
+    carriedSalesId: carriedPerson?.id ?? null,
+    carriedSalesName: carriedPerson?.name ?? null,
+  };
+}
+
+/**
+ * Whose team is on turn now:
+ *  1. a team carried from yesterday (not served yet today) keeps the turn;
+ *  2. otherwise the fixed cycle continues after the most recently served team;
+ *  3. a team with nobody available is skipped — the cycle order never moves.
+ */
+export function computeNextTeam(
+  salesState: Record<string, SalesState>,
+  history: Assignment[],
+  managersList: ManagerTeam[] = MANAGERS,
+  salesList: SalesPerson[] = SALES,
+  headsList: HeadGroup[] = HEADS,
+  options: RotationOptions = {},
+): TeamTurn | null {
+  const cycle = resolveCycle(managersList);
+  if (cycle.every((team) => !team)) return null;
+  const excluded = options.skippedIds ?? [];
+  const hasMembers = (team: ManagerTeam) =>
+    availableTeamMembers(team.id, salesState, salesList, excluded).length > 0;
+
+  const carried = options.carryOver;
+  const carriedIndex =
+    carried && (carried.managerId || carried.managerName)
+      ? cycleIndexOf(cycle, carried.managerId, carried.managerName)
+      : -1;
+  const carriedTeam = carriedIndex >= 0 ? cycle[carriedIndex] : null;
+  const servedToday = (managerId: string) => history.some((a) => a.managerId === managerId);
+
+  if (carriedTeam && !servedToday(carriedTeam.id) && hasMembers(carriedTeam)) {
+    const person = carried?.salesId
+      ? salesList.find((s) => s.id === carried.salesId) ?? null
+      : null;
+    const present =
+      person && person.managerId === carriedTeam.id && salesState[person.id]?.status === 'available'
+        ? person
+        : null;
+    return teamTurn(carriedTeam, `دور أمس المرحّل • تيم ${carriedTeam.name}`, false, present, headsList);
+  }
+
+  let previousIndex = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const index = cycleIndexOf(cycle, history[i].managerId, history[i].managerName);
+    if (index >= 0) {
+      previousIndex = index;
+      break;
+    }
+  }
+  const start = previousIndex >= 0 ? (previousIndex + 1) % cycle.length : carriedIndex >= 0 ? carriedIndex : 0;
+
+  for (let offset = 0; offset < cycle.length; offset++) {
+    const team = cycle[(start + offset) % cycle.length];
+    if (!team) continue;
+    if (!hasMembers(team)) continue;
+    const reason =
+      offset === 0 ? `دور تيم ${team.name}` : `تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
+    return teamTurn(team, reason, offset > 0, null, headsList);
+  }
+  return null;
+}
+
+/**
+ * The team cycle in turn order, rotated so `startManagerId` comes first — the
+ * list the «الترتيب» tab renders. Managers only: the sales names never appear
+ * as queue entries any more.
+ */
+export function teamOrderFrom(
+  managersList: ManagerTeam[] = MANAGERS,
+  startManagerId?: string,
+): ManagerTeam[] {
+  const teams = resolveCycle(managersList).filter((team): team is ManagerTeam => Boolean(team));
+  const startIndex = startManagerId ? teams.findIndex((team) => team.id === startManagerId) : -1;
+  if (startIndex <= 0) return teams;
+  return [...teams.slice(startIndex), ...teams.slice(0, startIndex)];
+}
+
+/** The team that follows `managerId` in the fixed cycle (cycle start when unknown). */
+export function successorTeam(
+  managersList: ManagerTeam[] = MANAGERS,
+  managerId?: string | null,
+): ManagerTeam | null {
+  const order = teamOrderFrom(managersList, managerId ?? undefined);
+  if (order.length === 0) return null;
+  // No (or unknown) manager → the cycle simply starts at its first team.
+  if (!managerId || order[0].id !== managerId) return order[0];
+  return order[1] ?? order[0] ?? null;
+}
+
+/** Team turn → ComputedTurn (sales-less): keeps the fixed-cycle cursor in one place. */
+function toTeamComputedTurn(turn: TeamTurn): ComputedTurn {
+  return {
+    salesId: '',
+    salesName: '',
+    managerId: turn.managerId,
+    managerName: turn.managerName,
+    managerAr: turn.managerAr,
+    headId: turn.headId,
+    headName: turn.headName,
+    headAr: turn.headAr,
+    reason: turn.reason,
+    isFallback: turn.isFallback,
+    carriedSalesId: turn.carriedSalesId,
+    carriedSalesName: turn.carriedSalesName,
+  };
+}
+
+/** Fixed-team path of `computeNextTurn`: the turn is the team, never a person. */
 function computeFixedTeamTurn(
   salesState: Record<string, SalesState>,
   history: Assignment[],
@@ -536,43 +753,11 @@ function computeFixedTeamTurn(
   salesList: SalesPerson[],
   carry: CarryOver | null | undefined,
 ): ComputedTurn | null {
-  const teams = AUTOMATIC_TEAM_ORDER.map((team, index) =>
-    managersList.find((m) => m.id === team.id) ??
-    managersList.find((m) => automaticTeamIndex(m.id, m.name) === index),
-  );
-  const teamIndex = (managerId: string, managerName: string): number => {
-    const existing = teams.findIndex((m) => m?.id === managerId);
-    return existing >= 0 ? existing : automaticTeamIndex(managerId, managerName);
-  };
-
-  let previousIndex = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
-    previousIndex = teamIndex(history[i].managerId, history[i].managerName);
-    if (previousIndex >= 0) break;
-  }
-  // An unserved carry-over is pinned by the caller. If it is explicitly skipped,
-  // or no person is available yet, continue after its team without losing the pin.
-  if (previousIndex < 0 && carry && (carry.managerId || carry.managerName)) {
-    previousIndex = teamIndex(carry.managerId, carry.managerName);
-  }
-
-  const start = (previousIndex + 1) % AUTOMATIC_TEAM_ORDER.length;
-  for (let offset = 0; offset < AUTOMATIC_TEAM_ORDER.length; offset++) {
-    const team = teams[(start + offset) % AUTOMATIC_TEAM_ORDER.length];
-    if (!team) continue;
-    const candidates = candidatesOf(
-      salesList.filter((s) => s.managerId === team.id),
-      salesState,
-      excludeIds,
-    );
-    if (!candidates.length) continue;
-    // Fairness and attendance decide the member WITHIN this team only.
-    const reason = offset === 0
-      ? `تناوب الفرق • دور تيم ${team.name}`
-      : `تناوب الفرق • تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
-    return toTurn(candidates[0].sales, reason, offset > 0, headsList, managersList);
-  }
-  return null;
+  const turn = computeNextTeam(salesState, history, managersList, salesList, headsList, {
+    carryOver: carry,
+    skippedIds: excludeIds,
+  });
+  return turn ? toTeamComputedTurn(turn) : null;
 }
 
 export function computeNextTurn(
@@ -660,10 +845,12 @@ export function computeNextTurn(
 }
 
 /**
- * Full round for today: every eligible, available rotation member appears once,
- * in the workspace's rotation order (fixed team cycle for RESTA/SITE; Head × Head
- * otherwise). The seed turn (e.g. yesterday's carry-over, even if still absent)
- * is pinned first and never repeated later in the list.
+ * Full round for today.
+ *
+ * SITE/RESTA: the round is the TEAM cycle (each team with available members
+ * once, starting from the team whose turn it is now, carry-over included).
+ * Other workspaces keep the legacy person-level Head × Head round, where the
+ * seed turn (yesterday's carry-over) is pinned first and never repeated.
  */
 export function predictFullRound(
   salesState: Record<string, SalesState>,
@@ -675,9 +862,24 @@ export function predictFullRound(
   salesList: SalesPerson[] = SALES,
   options: RotationOptions = {},
 ): ComputedTurn[] {
+  const excluded = options.skippedIds ?? [];
+
+  if (usesFixedTeamRotation(options.workspace)) {
+    // The seed is redundant here: a pending carry-over is expressed by
+    // `options.carryOver`, so the round is derived from state alone.
+    const current = computeNextTeam(salesState, history, managersList, salesList, headsList, options);
+    return teamOrderFrom(managersList, current?.managerId)
+      .filter((team) => availableTeamMembers(team.id, salesState, salesList, excluded).length > 0)
+      .map((team, index) =>
+        index === 0 && current
+          ? toTeamComputedTurn(current)
+          : toTeamComputedTurn(teamTurn(team, `دور تيم ${team.name}`, false, null, headsList)),
+      );
+  }
+
   const out: ComputedTurn[] = [];
   const simHistory: Assignment[] = [...history];
-  const served = new Set<string>(usesFixedTeamRotation(options.workspace) ? (options.skippedIds ?? []) : []);
+  const served = new Set<string>();
 
   const push = (t: ComputedTurn, id: string) => {
     out.push(t);
@@ -708,73 +910,53 @@ export function predictFullRound(
   return out;
 }
 
-/** Build a pinned turn for yesterday's carry-over.
- *  The person keeps slot #1 in the new day EVEN IF still absent.
- *  A same-team substitute is only chosen manually at assignment time.
- */
-export function carryOverTurn(
-  carry: CarryOver | null,
-  salesState: Record<string, SalesState>,
-  headsList: HeadGroup[] = HEADS,
-  managersList: ManagerTeam[] = MANAGERS,
-  salesList: SalesPerson[] = SALES,
-): ComputedTurn | null {
-  if (!carry || !carry.salesId) return null;
-  const original = salesList.find((s) => s.id === carry.salesId);
-  if (!original) return null;
-
-  const present = salesState[original.id]?.status === 'available';
-  return toTurn(
-    original,
-    present
-      ? `استكمال دور أمس — ${original.name} كان عليه الدور ولم يُخدم`
-      : `دور أمس المرحّل — ${original.name} يظل الدور له أولاً حتى لو لم يحضر (اختر بديلاً من نفس التيم عند الحاجة)`,
-    false,
-    headsList,
-    managersList,
-  );
-}
-
 /**
- * Choose the role to carry into a new day. An outstanding person-level carry
- * survives unrelated assignments, skips, reloads and an absence; it is cleared
- * only by the assignment handler when that person (or a same-team substitute)
- * actually uses the slot. Otherwise pin the current pending turn. With no
- * eligible person, retain a team-only cursor so the fixed cycle resumes safely.
+ * Choose the team to carry into a new day.
+ *
+ * The carry is always "this team's turn is still pending": an unserved team
+ * keeps the first turn tomorrow, and when nothing is pending the successor of
+ * the last served team starts the new day (so the cycle resumes, never repeats).
+ * A legacy person-level carry is preserved as-is.
  */
 export function carryOverForNewDay(
   currentCarry: CarryOver | null,
-  pendingTurn: ComputedTurn | null,
+  pendingTurn: TurnIdentity | null,
   history: Assignment[],
   headsList: HeadGroup[],
   workspace?: string,
   fromDate = new Date().toISOString(),
+  managersList: ManagerTeam[] = MANAGERS,
 ): CarryOver | null {
-  if (currentCarry?.salesId) return currentCarry;
+  if (currentCarry?.salesId || currentCarry?.managerId) return currentCarry;
 
-  if (pendingTurn) {
-    return {
-      salesId: pendingTurn.salesId,
-      salesName: pendingTurn.salesName,
-      managerId: pendingTurn.managerId,
-      managerName: pendingTurn.managerName,
-      headId: pendingTurn.headId,
-      headName: pendingTurn.headName,
-      fromDate,
-    };
-  }
+  const teamCarry = (turn: TurnIdentity): CarryOver => ({
+    // The team carries the turn — the sales is chosen manually tomorrow.
+    salesId: '',
+    salesName: '',
+    managerId: turn.managerId,
+    managerName: turn.managerName,
+    headId: turn.headId,
+    headName: turn.headName,
+    fromDate,
+  });
+
+  if (pendingTurn) return teamCarry(pendingTurn);
 
   const lastAssignment = history[history.length - 1];
   if (!lastAssignment) return currentCarry;
 
   if (usesFixedTeamRotation(workspace)) {
+    // Carry the TEAM whose turn comes next — never the team that just served,
+    // otherwise the new day would repeat it.
+    const team = successorTeam(managersList, lastAssignment.managerId);
+    if (!team) return currentCarry;
     return {
       salesId: '',
       salesName: '',
-      managerId: lastAssignment.managerId,
-      managerName: lastAssignment.managerName,
-      headId: lastAssignment.headId,
-      headName: lastAssignment.headName,
+      managerId: team.id,
+      managerName: team.name,
+      headId: team.headId,
+      headName: headsList.find((head) => head.id === team.headId)?.name ?? team.headId,
       fromDate,
     };
   }
