@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Crown, Users, UserPlus, Trash2, Network, Plus } from 'lucide-react';
+import { Check, Crown, Network, Pencil, Plus, Trash2, UserPlus, Users, X } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson } from '../lib/walkin';
 import { SectionTitle, useToast } from './ui';
 import { cn } from '../utils/cn';
@@ -11,12 +11,95 @@ interface Props {
   onAddHead: (name: string, ar?: string) => void;
   onAddManager: (name: string, headId: string, ar?: string) => void;
   onAddSales: (name: string, managerId: string, headId: string) => void;
+  onRenameHead: (id: string, name: string, ar?: string) => void;
+  onRenameManager: (id: string, name: string, ar?: string) => void;
+  onRenameSales: (id: string, name: string) => void;
   onDeleteHead: (id: string) => void;
   onDeleteManager: (id: string) => void;
   onDeleteSales: (id: string) => void;
 }
 
-type Mode = 'sales' | 'manager' | 'head';
+type Kind = 'sales' | 'manager' | 'head';
+
+/** The member currently being renamed, right where their name is displayed. */
+interface Draft {
+  kind: Kind;
+  id: string;
+  name: string;
+  ar: string;
+}
+
+/** Compact rename form — edits the name in place instead of deleting + re-adding. */
+function NameEditor({
+  label,
+  name,
+  ar,
+  withAr,
+  onName,
+  onAr,
+  onSave,
+  onCancel,
+}: {
+  label: string;
+  name: string;
+  ar: string;
+  withAr?: boolean;
+  onName: (value: string) => void;
+  onAr?: (value: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  // Inline styles: the design-system classes win over Tailwind utilities, so the
+  // compact size is set here instead of with utility classes.
+  const compactField = { padding: '0.45rem 0.65rem', fontSize: '13px' } as const;
+  const compactBtn = { padding: '0.5rem 0.75rem', fontSize: '12px' } as const;
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave();
+      }}
+      className="w-full space-y-2 rounded-xl border border-brand-200 bg-brand-50/60 p-2.5"
+    >
+      <p className="text-[11px] font-extrabold text-brand-700">{label}</p>
+      <div className={cn('grid gap-2', withAr && 'sm:grid-cols-2')}>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => onName(e.target.value)}
+          placeholder="الاسم بالإنجليزي"
+          className="field"
+          style={compactField}
+        />
+        {withAr && (
+          <input
+            value={ar}
+            onChange={(e) => onAr?.(e.target.value)}
+            placeholder="الاسم بالعربي (اختياري)"
+            className="field"
+            style={compactField}
+          />
+        )}
+      </div>
+      <div className="flex gap-1.5">
+        <button
+          type="submit"
+          disabled={!name.trim()}
+          className="btn btn-primary flex-1"
+          style={compactBtn}
+        >
+          <Check className="size-3.5" />
+          حفظ التعديل
+        </button>
+        <button type="button" onClick={onCancel} className="btn btn-neutral" style={compactBtn}>
+          <X className="size-3.5" />
+          إلغاء
+        </button>
+      </div>
+    </form>
+  );
+}
 
 export function ManageOrgPanel({
   heads,
@@ -25,12 +108,16 @@ export function ManageOrgPanel({
   onAddHead,
   onAddManager,
   onAddSales,
+  onRenameHead,
+  onRenameManager,
+  onRenameSales,
   onDeleteHead,
   onDeleteManager,
   onDeleteSales,
 }: Props) {
   const toast = useToast();
-  const [mode, setMode] = useState<Mode>('sales');
+  const [mode, setMode] = useState<Kind>('sales');
+  const [draft, setDraft] = useState<Draft | null>(null);
 
   const [headName, setHeadName] = useState('');
   const [headAr, setHeadAr] = useState('');
@@ -39,6 +126,27 @@ export function ManageOrgPanel({
   const [mgrAr, setMgrAr] = useState('');
   const [salesName, setSalesName] = useState('');
   const [salesMgrId, setSalesMgrId] = useState(managers[0]?.id || '');
+
+  const startEdit = (kind: Kind, id: string, name: string, ar = '') => {
+    setDraft({ kind, id, name, ar });
+  };
+
+  const saveDraft = () => {
+    if (!draft) return;
+    const name = draft.name.trim();
+    if (!name) return;
+    if (draft.kind === 'head') {
+      onRenameHead(draft.id, name, draft.ar.trim());
+      toast('success', `تم تعديل اسم الـ Head إلى ${name}`);
+    } else if (draft.kind === 'manager') {
+      onRenameManager(draft.id, name, draft.ar.trim());
+      toast('success', `تم تعديل اسم المدير إلى ${name}`);
+    } else {
+      onRenameSales(draft.id, name);
+      toast('success', `تم تعديل اسم السيلز إلى ${name}`);
+    }
+    setDraft(null);
+  };
 
   const handleAddHead = (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,7 +176,7 @@ export function ManageOrgPanel({
     setSalesName('');
   };
 
-  const tabs: { id: Mode; label: string; icon: typeof UserPlus }[] = [
+  const tabs: { id: Kind; label: string; icon: typeof UserPlus }[] = [
     { id: 'sales', label: 'سيلز', icon: UserPlus },
     { id: 'manager', label: 'مدير', icon: Users },
     { id: 'head', label: 'Head', icon: Crown },
@@ -211,79 +319,172 @@ export function ManageOrgPanel({
           icon={<Network className="size-4.5" strokeWidth={2.1} />}
         />
 
+        <p className="mb-3 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-[11px] font-semibold leading-relaxed text-emerald-700">
+          <Pencil className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            للتعديل على أي اسم اضغط أيقونة القلم بجانبه. التعديل بيحصل على نفس الشخص — الحضور والعدّاد وترتيب
+            الدور والسجل كلهم بيفضلوا زي ما هم، مش حذف وإضافة من جديد.
+          </span>
+        </p>
+
         <div className="space-y-3">
           {heads.map((h) => {
             const hMgrs = managers.filter((m) => m.headId === h.id);
             return (
               <div key={h.id} className="overflow-hidden rounded-xl border border-ink-100">
-                <div className="flex items-center justify-between gap-2 bg-ink-50/80 px-3 py-2.5">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <Crown className="size-4 shrink-0 text-brand-600" strokeWidth={2.2} />
-                    <span className="truncate text-[13px] font-extrabold text-ink-900">{h.name}</span>
+                {draft && draft.kind === 'head' && draft.id === h.id ? (
+                  <div className="bg-ink-50/80 p-2.5">
+                    <NameEditor
+                      label="تعديل اسم الـ Head"
+                      name={draft.name}
+                      ar={draft.ar}
+                      withAr
+                      onName={(v) => setDraft({ ...draft, name: v })}
+                      onAr={(v) => setDraft({ ...draft, ar: v })}
+                      onSave={saveDraft}
+                      onCancel={() => setDraft(null)}
+                    />
                   </div>
-                  {heads.length > 2 && (
-                    <button
-                      onClick={() => {
-                        if (window.confirm(`حذف Head "${h.name}"؟ سيتم حذف مديريه وسيلز تيماته.`)) {
-                          onDeleteHead(h.id);
-                          toast('info', `تم حذف ${h.name}`);
-                        }
-                      }}
-                      aria-label={`حذف ${h.name}`}
-                      className="grid size-7 shrink-0 place-items-center rounded-lg text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                  )}
-                </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-2 bg-ink-50/80 px-3 py-2.5">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Crown className="size-4 shrink-0 text-brand-600" strokeWidth={2.2} />
+                      <span className="truncate text-[13px] font-extrabold text-ink-900">{h.name}</span>
+                      {h.ar && h.ar !== h.name && (
+                        <span className="truncate text-[11px] font-bold text-ink-400">{h.ar}</span>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <button
+                        onClick={() => startEdit('head', h.id, h.name, h.ar)}
+                        aria-label={`تعديل اسم ${h.name}`}
+                        title="تعديل الاسم"
+                        className="grid size-7 place-items-center rounded-lg text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                      {heads.length > 2 && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`حذف Head "${h.name}"؟ سيتم حذف مديريه وسيلز تيماته.`)) {
+                              onDeleteHead(h.id);
+                              toast('info', `تم حذف ${h.name}`);
+                            }
+                          }}
+                          aria-label={`حذف ${h.name}`}
+                          title="حذف"
+                          className="grid size-7 place-items-center rounded-lg text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-2 p-2.5">
                   {hMgrs.map((m) => {
                     const mSales = sales.filter((s) => s.managerId === m.id && !s.isManager);
+                    const editingManager = draft && draft.kind === 'manager' && draft.id === m.id;
                     return (
                       <div key={m.id} className="rounded-lg bg-ink-50/60 p-2.5">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="flex min-w-0 items-center gap-1.5 text-[12px] font-extrabold text-ink-700">
-                            <Users className="size-3.5 shrink-0 text-ink-400" />
-                            <span className="truncate">تيم {m.name}</span>
-                          </span>
-                          {managers.length > 1 && (
-                            <button
-                              onClick={() => {
-                                if (window.confirm(`حذف تيم "${m.name}" وسيلز التيم؟`)) {
-                                  onDeleteManager(m.id);
-                                  toast('info', `تم حذف تيم ${m.name}`);
-                                }
-                              }}
-                              aria-label={`حذف تيم ${m.name}`}
-                              className="grid size-6 shrink-0 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                            >
-                              <Trash2 className="size-3" />
-                            </button>
+                          {editingManager && draft ? (
+                            <NameEditor
+                              label="تعديل اسم المدير والتيم"
+                              name={draft.name}
+                              ar={draft.ar}
+                              withAr
+                              onName={(v) => setDraft({ ...draft, name: v })}
+                              onAr={(v) => setDraft({ ...draft, ar: v })}
+                              onSave={saveDraft}
+                              onCancel={() => setDraft(null)}
+                            />
+                          ) : (
+                            <>
+                              <span className="flex min-w-0 items-center gap-1.5 text-[12px] font-extrabold text-ink-700">
+                                <Users className="size-3.5 shrink-0 text-ink-400" />
+                                <span className="truncate">تيم {m.name}</span>
+                                {m.ar && m.ar !== m.name && (
+                                  <span className="truncate text-[11px] font-bold text-ink-400">{m.ar}</span>
+                                )}
+                              </span>
+                              <div className="flex shrink-0 items-center gap-0.5">
+                                <button
+                                  onClick={() => startEdit('manager', m.id, m.name, m.ar)}
+                                  aria-label={`تعديل اسم تيم ${m.name}`}
+                                  title="تعديل الاسم"
+                                  className="grid size-6 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                >
+                                  <Pencil className="size-3" />
+                                </button>
+                                {managers.length > 1 && (
+                                  <button
+                                    onClick={() => {
+                                      if (window.confirm(`حذف تيم "${m.name}" وسيلز التيم؟`)) {
+                                        onDeleteManager(m.id);
+                                        toast('info', `تم حذف تيم ${m.name}`);
+                                      }
+                                    }}
+                                    aria-label={`حذف تيم ${m.name}`}
+                                    title="حذف"
+                                    className="grid size-6 shrink-0 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                  >
+                                    <Trash2 className="size-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </>
                           )}
                         </div>
 
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {mSales.map((s) => (
-                            <span
-                              key={s.id}
-                              className="inline-flex items-center gap-1 rounded-lg border border-ink-200 bg-white px-2 py-1 text-[11px] font-bold text-ink-700"
-                            >
-                              {s.name}
-                              <button
-                                onClick={() => {
-                                  if (window.confirm(`حذف السيلز "${s.name}"؟`)) {
-                                    onDeleteSales(s.id);
-                                    toast('info', `تم حذف ${s.name}`);
-                                  }
-                                }}
-                                aria-label={`حذف ${s.name}`}
-                                className="text-ink-300 transition hover:text-brand-600"
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          {mSales.map((s) => {
+                            const editingSales = draft && draft.kind === 'sales' && draft.id === s.id;
+                            if (editingSales && draft) {
+                              return (
+                                <div key={s.id} className="basis-full">
+                                  <NameEditor
+                                    label={`تعديل اسم السيلز (تيم ${m.name})`}
+                                    name={draft.name}
+                                    ar=""
+                                    onName={(v) => setDraft({ ...draft, name: v })}
+                                    onSave={saveDraft}
+                                    onCancel={() => setDraft(null)}
+                                  />
+                                </div>
+                              );
+                            }
+                            return (
+                              <span
+                                key={s.id}
+                                className="inline-flex items-center gap-0.5 rounded-lg border border-ink-200 bg-white py-0.5 pe-0.5 ps-2 text-[11px] font-bold text-ink-700"
                               >
-                                ×
-                              </button>
-                            </span>
-                          ))}
+                                <span className="max-w-[10rem] truncate">{s.name}</span>
+                                <button
+                                  onClick={() => startEdit('sales', s.id, s.name)}
+                                  aria-label={`تعديل اسم ${s.name}`}
+                                  title="تعديل الاسم"
+                                  className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                >
+                                  <Pencil className="size-3" />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    if (window.confirm(`حذف السيلز "${s.name}"؟`)) {
+                                      onDeleteSales(s.id);
+                                      toast('info', `تم حذف ${s.name}`);
+                                    }
+                                  }}
+                                  aria-label={`حذف ${s.name}`}
+                                  title="حذف"
+                                  className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                >
+                                  <X className="size-3" />
+                                </button>
+                              </span>
+                            );
+                          })}
                           {mSales.length === 0 && (
                             <span className="text-[11px] font-medium text-ink-300">لا يوجد سيلز بعد</span>
                           )}
