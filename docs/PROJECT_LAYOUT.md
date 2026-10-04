@@ -60,6 +60,26 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
 * A carry-over is consumed when its team is served (`managerId` match in
   `confirmWith`), so a served team is never pinned again.
 
+## Renaming members — edit in place, never delete + re-add
+
+Heads, managers and sales are renamed from «إدارة الفريق» (the pencil next to
+any name) through `src/lib/org.ts`:
+
+* `renameHead` / `renameManager` / `renameSalesPerson` rewrite **only names**.
+  The `id` never changes, so `salesState` (attendance, check-in order, walk
+  counts), the fixed team cycle, the manual «الترتيب» order and every
+  already-served turn keep pointing at the same person.
+* History stores name copies (`managerName`, `headName`, `salesName`,
+  `originalSalesName`), and `carryOver` stores them too — every one of them is
+  updated, otherwise the leaderboard/recap/receipt would keep printing the old
+  name.
+* A manager is both a team and an attendance row (`${managerId}-self`, or the
+  manager id itself for the built-in people): renaming a manager updates the
+  team record and his own row, so the «مدير» chip never drifts from the team
+  name. Never leave those two out of sync.
+* Arabic labels follow the same rule: `undefined` keeps the stored `ar`,
+  a cleared field falls back to the Latin name (rotation reasons print it).
+
 ## Sync layer — things that must stay true
 
 * **Never call `GET /rest/v1/` (the PostgREST OpenAPI root) with the publishable

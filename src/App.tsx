@@ -45,6 +45,12 @@ import {
   setActiveAccount,
   formatTime,
 } from './lib/walkin';
+import {
+  renameHead,
+  renameManager,
+  renameSalesPerson,
+} from './lib/org';
+import type { OrgState } from './lib/org';
 import type {
   Assignment,
   CarryOver,
@@ -797,6 +803,39 @@ function WalkInApp({
       ...prev,
       [id]: { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, lastServedAt: null },
     }));
+  };
+
+  /**
+   * Renaming edits the member in place — the id (and therefore the attendance,
+   * the counters, the queue position and every already-served turn) is kept.
+   */
+  const orgState = (): OrgState => ({ heads, managers, sales, history, carryOver });
+
+  const updateHeadName = (headId: string, name: string, ar?: string) => {
+    const next = renameHead(orgState(), headId, name, ar);
+    setHeads(next.heads);
+    setManagers(next.managers);
+    setSales(next.sales);
+    setHistory(next.history);
+    setCarryOver(next.carryOver);
+  };
+
+  const updateManagerName = (managerId: string, name: string, ar?: string) => {
+    const next = renameManager(orgState(), managerId, name, ar);
+    setHeads(next.heads);
+    setManagers(next.managers);
+    setSales(next.sales);
+    setHistory(next.history);
+    setCarryOver(next.carryOver);
+  };
+
+  const updateSalesName = (salesId: string, name: string) => {
+    const next = renameSalesPerson(orgState(), salesId, name);
+    setHeads(next.heads);
+    setManagers(next.managers);
+    setSales(next.sales);
+    setHistory(next.history);
+    setCarryOver(next.carryOver);
   };
 
   const deleteHead = (headId: string) => {
@@ -1598,6 +1637,9 @@ function WalkInApp({
                   onAddHead={addHead}
                   onAddManager={addManager}
                   onAddSales={addSales}
+                  onRenameHead={updateHeadName}
+                  onRenameManager={updateManagerName}
+                  onRenameSales={updateSalesName}
                   onDeleteHead={deleteHead}
                   onDeleteManager={deleteManager}
                   onDeleteSales={deleteSales}
