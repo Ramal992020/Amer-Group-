@@ -14,7 +14,7 @@
 // the old name (the member record, the team record for a manager, the history
 // entries, yesterday's carried-over team) is updated to the new name.
 
-import type { Assignment, CarryOver, HeadGroup, ManagerTeam, OrgChart, SalesPerson } from './walkin';
+import type { Assignment, CarryOver, HeadGroup, ManagerTeam, OrgChart, SalesPerson, TeamCycleSettings } from './walkin';
 
 export interface OrgState {
   heads: HeadGroup[];
@@ -25,6 +25,8 @@ export interface OrgState {
   carryOver: CarryOver | null;
   /** Ids the user deleted — optional so callers that only rename can omit it. */
   removedIds?: string[];
+  /** Team rotation settings («الترتيب» tab) — carried when adopting a shared chart. */
+  cycle?: TeamCycleSettings;
 }
 
 /** A manager's own attendance row is stored as `${managerId}-self`. */
@@ -174,6 +176,9 @@ export function applyOrgChart(org: OrgState, chart: OrgChart): OrgState {
     managers: chart.managers,
     sales: chart.sales,
     removedIds: chart.removedIds,
+    // The turn-order settings travel with the chart: the branch that adopts it
+    // rotates with the same order the other branch published.
+    cycle: chart.cycle ?? next.cycle,
   };
 }
 

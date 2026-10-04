@@ -34,7 +34,6 @@ import {
   computeNextTeam,
   teamOrderFrom,
   availableTeamMembers,
-  AUTOMATIC_TEAM_ORDER,
   usesFixedTeamRotation,
   carryOverForNewDay,
   createNewDaySalesState,
@@ -47,6 +46,7 @@ import {
   orgChartKey,
   mirrorOrgChart,
   mergeOrgCharts,
+  normalizeTeamCycle,
   otherWorkspace,
   setActiveAccount,
   formatTime,
@@ -68,6 +68,7 @@ import type {
   SalesPerson,
   SalesState,
   PersistedWalkin,
+  TeamCycleSettings,
   TeamTurn,
   UndoEntry,
   VisitType,
@@ -105,6 +106,7 @@ import { ClientExcelBuilder } from './components/ClientExcelBuilder';
 import { ClientRegistration } from './components/ClientRegistration';
 import { DoneReceipt } from './components/DoneReceipt';
 import { AddMemberPanel, ManageOrgPanel } from './components/ManageOrgPanel';
+import { CycleSettingsPanel } from './components/CycleSettingsPanel';
 import { AmerLogo } from './components/AmerLogo';
 import {
   Modal,
@@ -279,6 +281,13 @@ function WalkInApp({
   const [removedIds, setRemovedIds] = useState<string[]>(boot.removedIds ?? []);
   const [sharedOrgRev, setSharedOrgRev] = useState<number>(boot.orgRevision ?? 0);
 
+  // طريقة ترتيب الأدوار («الترتيب» tab) — shared by both branches through the
+  // org row, so one choice re-orders SITE and RESTA together. Falls back to
+  // the built-in fixed cycle when nothing was configured yet.
+  const [cycleSettings, setCycleSettings] = useState<TeamCycleSettings>(() =>
+    normalizeTeamCycle(boot.teamCycle),
+  );
+
   const [salesState, setSalesState] = useState<Record<string, SalesState>>(boot.salesState);
   const [history, setHistory] = useState<Assignment[]>(boot.history);
   const [counter, setCounter] = useState(boot.counter);
@@ -332,6 +341,7 @@ function WalkInApp({
     managers: boot.customManagers || DEFAULT_MANAGERS,
     sales: boot.customSales || DEFAULT_SALES,
     removedIds: boot.removedIds ?? [],
+    cycle: normalizeTeamCycle(boot.teamCycle),
   });
   const adoptSharedOrgRef = useRef<(chart: OrgChart, revision: number) => void>(() => {});
   const pullSharedOrgRef = useRef<() => Promise<boolean>>(async () => false);
@@ -396,6 +406,7 @@ function WalkInApp({
       removedIds,
       orgRevision: sharedOrgRev,
       manualOrder,
+      teamCycle: cycleSettings,
       undoStack,
     }),
     [
@@ -412,6 +423,7 @@ function WalkInApp({
       removedIds,
       sharedOrgRev,
       manualOrder,
+      cycleSettings,
       undoStack,
     ],
   );
@@ -421,8 +433,8 @@ function WalkInApp({
    * saved/renamed ones, minus whoever was deleted.
    */
   const localChart = useMemo<OrgChart>(
-    () => hydrateOrgChart({ heads, managers, sales, removedIds }),
-    [heads, managers, sales, removedIds],
+    () => hydrateOrgChart({ heads, managers, sales, removedIds, cycle: cycleSettings }),
+    [heads, managers, sales, removedIds, cycleSettings],
   );
   // Assigned during render on purpose: a network response that lands right
   // after another state change must never read the previous roster (an effect
@@ -467,6 +479,9 @@ function WalkInApp({
       if (state.customManagers) setManagers(state.customManagers);
       if (state.customSales) setSales(state.customSales);
       if (Array.isArray(state.removedIds)) setRemovedIds(state.removedIds);
+      // The turn-order settings ride the same freshness guard as the roster,
+      // so an older snapshot can never undo a newer cycle choice.
+      setCycleSettings(normalizeTeamCycle(state.teamCycle));
       setOrgRevision(incomingOrgRev);
     } else if (state.customHeads) {
       dirtySeqRef.current += 1;
@@ -513,6 +528,8 @@ function WalkInApp({
       setHistory(next.history);
       setCarryOver(next.carryOver);
       setRemovedIds(next.removedIds ?? []);
+      // نفس طريقة الترتيب على الفرعين — الدورة تسافر مع الهيكل المشترك.
+      setCycleSettings(normalizeTeamCycle(chart.cycle));
       // New people start as «لم يحضر»; existing attendance is never touched.
       setSalesState((prev) => {
         const merged = defaultSalesState(next.sales);
@@ -607,6 +624,12 @@ function WalkInApp({
   /** Mark the roster as edited locally so the shared row is republished. */
   const markOrgEdited = (): void => {
     orgDirtyRef.current = true;
+  };
+
+  /** حفظ طريقة ترتيب جديدة («الترتيب» tab) ونشرها للفرع الآخر مع الهيكل المشترك. */
+  const updateCycleSettings = (next: TeamCycleSettings): void => {
+    setCycleSettings(normalizeTeamCycle(next));
+    markOrgEdited();
   };
 
   /** Reconnect with exponential backoff after a transient failure. */
@@ -910,8 +933,8 @@ function WalkInApp({
 
   // ── Rotation ──
   const rotationOptions = useMemo(
-    () => ({ workspace: account, carryOver }),
-    [account, carryOver],
+    () => ({ workspace: account, carryOver, cycle: cycleSettings }),
+    [account, carryOver, cycleSettings],
   );
   const effectiveStartingHead = useMemo(() => {
     if (!isFixedTeamWorkspace && history.length === 0 && carryOver?.headId) {
@@ -1221,6 +1244,7 @@ function WalkInApp({
     const nextAfter = computeNextTeam(newSalesState, newHistory, managers, sales, heads, {
       workspace: account,
       carryOver: carryAfter,
+      cycle: cycleSettings,
     });
     setSeq(n);
     setHistory(newHistory);
@@ -1281,7 +1305,7 @@ function WalkInApp({
     const servedToday = carryOver?.managerId
       ? history.some((a) => a.managerId === carryOver.managerId)
       : false;
-    setCarryOver(carryOverForNewDay(servedToday ? null : carryOver, pending, history, heads, account, undefined, managers));
+    setCarryOver(carryOverForNewDay(servedToday ? null : carryOver, pending, history, heads, account, undefined, managers, cycleSettings));
     // Keep saved custom-team members in both RESTA and SITE's fresh attendance map.
     setSalesState(createNewDaySalesState(account, sales));
     setHistory([]);
@@ -1411,7 +1435,9 @@ function WalkInApp({
                     {TITLES[tab].title}
                   </h1>
                   <p className="hidden truncate text-[12px] font-medium text-ink-400 sm:block">
-                    {tab === 'order' && isFixedTeamWorkspace ? 'التناوب بترتيب الفرق الثابت في RESTA وSITE' : TITLES[tab].sub}
+                    {tab === 'order' && isFixedTeamWorkspace
+                      ? 'التناوب بين التيمات — خصّص طريقة الترتيب من «طريقة ترتيب الأدوار»'
+                      : TITLES[tab].sub}
                   </p>
                 </div>
               </div>
@@ -1856,33 +1882,37 @@ function WalkInApp({
                 </section>
 
                 <section className="surface anim-fade-up p-4" style={{ animationDelay: '0.08s' }}>
-                  <SectionTitle
-                    title={isFixedTeamWorkspace ? 'دورة الفرق التلقائية' : 'بداية تناوب اليوم'}
-                    subtitle={isFixedTeamWorkspace ? 'ترتيب ثابت مع تخطي الفرق غير المتاحة' : 'اختر الـ Head الذي يبدأ به الدور'}
-                    icon={<Crown className="size-4.5" strokeWidth={2.1} />}
-                  />
                   {isFixedTeamWorkspace ? (
-                    <div className="space-y-2 rounded-xl bg-ink-50 p-3 text-[12px] font-semibold leading-relaxed text-ink-500">
-                      <p dir="ltr">{AUTOMATIC_TEAM_ORDER.map((team) => team.name).join(' → ')} → …</p>
-                      <p>يبدأ الدور من التيم المرحّل من أمس، ثم تستمر الدورة بالترتيب. أي تيم دون سيلز متاح يُتخطّى تلقائياً دون تغيير ترتيب باقي الفرق — والسيلز يُختار يدوياً من التيم عند دوره.</p>
-                    </div>
+                    <CycleSettingsPanel
+                      managers={managers}
+                      heads={heads}
+                      settings={cycleSettings}
+                      onChange={updateCycleSettings}
+                    />
                   ) : (
-                    <div className="grid grid-cols-2 gap-2">
-                      {heads.map((h) => (
-                        <button
-                          key={h.id}
-                          onClick={() => setStartingHead(h.id)}
-                          className={cn(
-                            'rounded-xl border-2 px-3 py-3 text-[13px] font-extrabold transition',
-                            effectiveStartingHead === h.id
-                              ? 'border-brand-600 bg-brand-50 text-brand-700'
-                              : 'border-ink-100 bg-white text-ink-700 hover:border-ink-200',
-                          )}
-                        >
-                          {h.name}
-                        </button>
-                      ))}
-                    </div>
+                    <>
+                      <SectionTitle
+                        title="بداية تناوب اليوم"
+                        subtitle="اختر الـ Head الذي يبدأ به الدور"
+                        icon={<Crown className="size-4.5" strokeWidth={2.1} />}
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        {heads.map((h) => (
+                          <button
+                            key={h.id}
+                            onClick={() => setStartingHead(h.id)}
+                            className={cn(
+                              'rounded-xl border-2 px-3 py-3 text-[13px] font-extrabold transition',
+                              effectiveStartingHead === h.id
+                                ? 'border-brand-600 bg-brand-50 text-brand-700'
+                                : 'border-ink-100 bg-white text-ink-700 hover:border-ink-200',
+                            )}
+                          >
+                            {h.name}
+                          </button>
+                        ))}
+                      </div>
+                    </>
                   )}
                 </section>
               </div>

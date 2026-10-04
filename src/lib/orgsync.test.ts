@@ -332,3 +332,56 @@ test('a chart round-trips through save/load (as the cloud row does)', () => {
     );
   });
 });
+
+// ───────────────── Turn-order settings riding the shared chart ─────────────────
+
+import { DEFAULT_TEAM_CYCLE, normalizeTeamCycle } from './walkin.ts';
+import type { TeamCycleSettings } from './walkin.ts';
+
+test('the chosen turn order travels with the shared chart, its fingerprint, and mirrors', () => {
+  const cycle: TeamCycleSettings = { mode: 'custom', order: ['hossam', 'ahmed'] };
+  const chart = { ...chartWithExtraPeople(), cycle };
+  const key = orgChartKey(chart);
+
+  // Normalizing (as the cloud row does) keeps the exact settings.
+  const normalized = hydrateOrgChart(chart);
+  assert.deepEqual(normalized.cycle, cycle);
+  assert.equal(orgChartKey(normalized), key);
+  // A cycle-only edit is a real edit — the other branch must adopt it.
+  assert.notEqual(orgChartKey({ ...chart, cycle: DEFAULT_TEAM_CYCLE }), key);
+  // A chart written before the setting existed reads as the automatic cycle.
+  assert.deepEqual(hydrateOrgChart({ ...chartWithExtraPeople(), cycle: undefined }).cycle, DEFAULT_TEAM_CYCLE);
+
+  withMemoryLocalStorage(() => {
+    setActiveAccount('SITE');
+    mirrorOrgChart('SITE', normalized, 4242);
+    // Switching branch on the same device shows the same rotation order.
+    assert.deepEqual(loadPersisted('RESTA').teamCycle, cycle);
+    setActiveAccount('');
+  });
+});
+
+test('adopting and merging shared charts carries the turn-order settings', () => {
+  const cycle: TeamCycleSettings = { mode: 'custom', order: ['hossam'] };
+  const shared = { ...chartWithExtraPeople(), cycle };
+  const resta = {
+    heads: clone(HEADS),
+    managers: clone(MANAGERS),
+    sales: clone(SALES),
+    history: [],
+    carryOver: null,
+  };
+
+  const after = applyOrgChart(resta, shared);
+  assert.deepEqual(after.cycle, cycle);
+  // The shared chart is the source of truth: a row without a custom choice
+  // (normalized to the automatic cycle) resets the branch to it as well.
+  const auto = applyOrgChart({ ...resta, cycle }, chartWithExtraPeople());
+  assert.deepEqual(auto.cycle, DEFAULT_TEAM_CYCLE);
+
+  // The first shared chart is seeded from both branches — this device wins.
+  const site = hydrateOrgChart({ customHeads: clone(HEADS), customManagers: clone(MANAGERS), customSales: clone(SALES) });
+  const seeded = mergeOrgCharts({ ...site, cycle }, site);
+  assert.deepEqual(seeded.cycle, cycle);
+  assert.deepEqual(normalizeTeamCycle(undefined), DEFAULT_TEAM_CYCLE);
+});
