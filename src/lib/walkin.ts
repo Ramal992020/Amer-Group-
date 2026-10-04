@@ -474,11 +474,24 @@ function toTurn(
   };
 }
 
-/** One fixed automatic team cycle shared by RESTA and SITE. */
+/**
+ * One fixed automatic team cycle shared by RESTA and SITE:
+ *
+ *   1) team Ahmed Yossry    4) team Perry
+ *   2) team Rewaida         5) team Hala Elfar
+ *   3) team Youssef Shehata 6) team Dina Abdo  → back to team Ahmed Yossry …
+ *
+ * The pending person carried from yesterday stays pinned at #1, then the cycle
+ * continues from their own team in this order (Rewaida → Youssef Shehata →
+ * Perry → Hala Elfar → Dina Abdo → Ahmed Yossry → Rewaida …; Dina Abdo →
+ * Ahmed Yossry → Rewaida → Youssef Shehata → Perry → Hala Elfar → Dina …).
+ * A team with nobody available is skipped without re-ordering the others.
+ */
 export const AUTOMATIC_TEAM_ORDER = [
   { id: 'ahmed', name: 'Ahmed Yossry' },
   { id: 'rewaida', name: 'Rewaida' },
   { id: 'shehata', name: 'Youssef Shehata' },
+  { id: 'perry', name: 'Perry' },
   { id: 'hala-elfar', name: 'Hala Elfar' },
   { id: 'dina-abdo', name: 'Dina Abdo' },
 ] as const;
