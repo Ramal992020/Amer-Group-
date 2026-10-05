@@ -19,6 +19,8 @@ export interface TeamMemberOption {
   checkInOrder: number | null;
   /** Yesterday's carried person, when their team's turn came back to them. */
   carried: boolean;
+  /** The team's manager, appearing as a normal pick when a teammate is unavailable. */
+  isManager?: boolean;
 }
 
 export interface UpcomingTeam {
@@ -161,6 +163,7 @@ export function CurrentTurn({
               >
                 <span className="flex items-center gap-1.5">
                   <span className="truncate text-[13.5px] font-extrabold text-ink-900">{m.name}</span>
+                  {m.isManager && <span className="badge badge-red shrink-0">مدير</span>}
                   {m.carried && <span className="badge badge-amber shrink-0">دور أمس</span>}
                 </span>
                 <span className="tnum mt-0.5 block text-[10px] font-semibold text-ink-400">

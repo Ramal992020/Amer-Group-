@@ -155,8 +155,9 @@ function round(f: Fixture, seed?: ComputedTurn | null, options: RotationOptions 
   });
 }
 
+/** Sets EVERY member of a team (including the manager's own row) to a status. */
 function setTeamStatus(f: Fixture, managerId: string, status: SalesState['status']): void {
-  f.sales.filter((s) => s.managerId === managerId && !s.isManager).forEach((s) => {
+  f.sales.filter((s) => s.managerId === managerId).forEach((s) => {
     f.state[s.id].status = status;
   });
 }
@@ -193,12 +194,16 @@ test('the engine never proposes a sales name in SITE/RESTA — the turn is the t
   }
 });
 
-test('a team turn exposes the roster to pick from, not one chosen person', () => {
+test('a team turn exposes the roster to pick from, not one chosen person — the manager included', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture(3);
     const roster = availableTeamMembers('ahmed', f.state, f.sales);
-    assert.deepEqual(roster.map((s) => s.id), ['ahmed-member-1', 'ahmed-member-2', 'ahmed-member-3']);
-    assert.ok(roster.every((s) => !s.isManager));
+    // The manager's own row sits in the roster like any teammate (earliest
+    // check-in here), so he can be picked when a teammate is unavailable.
+    assert.deepEqual(roster.map((s) => s.id), [
+      'ahmed-self', 'ahmed-member-1', 'ahmed-member-2', 'ahmed-member-3',
+    ]);
+    assert.ok(roster.some((s) => s.isManager));
     assert.equal(next(f, [], { workspace })?.managerId, 'ahmed');
   }
 });
@@ -268,9 +273,11 @@ test('within a team the picker order is fewer own turns first, then earliest che
   f.state['ahmed-member-2'].walkCount = 1;
   f.state['ahmed-member-3'].walkCount = 1;
   f.state['ahmed-member-3'].checkInOrder = 99;
+  // ahmed-self has 0 own turns and the earliest check-in of the team, so the
+  // manager leads the picker order exactly like a fresh, fair teammate would.
   assert.deepEqual(
     availableTeamMembers('ahmed', f.state, f.sales).map((s) => s.id),
-    ['ahmed-member-2', 'ahmed-member-3', 'ahmed-member-1'],
+    ['ahmed-self', 'ahmed-member-2', 'ahmed-member-3', 'ahmed-member-1'],
   );
 });
 
@@ -295,11 +302,29 @@ test('attendance counts and other teams check-in order cannot change fixed team 
   }
 });
 
-test('managers remain attendance-only and do not make an unavailable team eligible', () => {
+test('a present manager keeps his team eligible when every teammate is absent', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    // Everybody on Hala's team is absent EXCEPT Hala herself — she can still
+    // sit with the client, so her team's turn is not skipped.
+    f.sales.filter((s) => s.managerId === HALA && !s.isManager).forEach((s) => {
+      f.state[s.id].status = 'absent';
+    });
+    assert.equal(f.state[`${HALA}-self`].status, 'available');
+    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, HALA);
+    assert.deepEqual(
+      availableTeamMembers(HALA, f.state, f.sales).map((s) => s.id),
+      [`${HALA}-self`],
+    );
+    assert.deepEqual(round(f, undefined, { workspace }).map((t) => t.managerId), CYCLE);
+  }
+});
+
+test('a team with the manager AND every teammate absent is skipped like any other empty team', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     setTeamStatus(f, HALA, 'absent');
-    assert.equal(f.state[`${HALA}-self`].status, 'available');
+    assert.equal(f.state[`${HALA}-self`].status, 'absent');
     assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, GANNAH);
     assert.deepEqual(
       round(f, undefined, { workspace }).map((t) => t.managerId),
@@ -379,15 +404,37 @@ test('an absent carried team stays first while a teammate is available, and the 
       round(f, undefined, { workspace, carryOver: pending }).map((t) => t.managerId),
       ['rewaida', HANY, 'perry', HALA, GANNAH, 'ahmed', 'shehata'],
     );
-    assert.deepEqual(availableTeamMembers('rewaida', f.state, f.sales).map((s) => s.id), ['rewaida-member-2']);
+    // The manager is present too, and sits ahead by earliest check-in.
+    assert.deepEqual(
+      availableTeamMembers('rewaida', f.state, f.sales).map((s) => s.id),
+      ['rewaida-self', 'rewaida-member-2'],
+    );
   }
 });
 
-test('skipping the only member of the carried team moves the cycle on without losing the team order', () => {
+test('skipping the only teammate of the carried team keeps the team on turn because the manager can step in', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     const pending = carry(f, 'rewaida');
     const options = { workspace, carryOver: pending, skippedIds: ['rewaida-member-1'] };
+    // rewaida-member-1 is skipped, but rewaida-self (the manager) is still
+    // available, so the team is not skipped — the manager picks up the slot.
+    assert.equal(next(f, [], options)?.managerId, 'rewaida');
+    assert.deepEqual(
+      availableTeamMembers('rewaida', f.state, f.sales, options.skippedIds).map((s) => s.id),
+      ['rewaida-self'],
+    );
+    assert.deepEqual(round(f, undefined, options).map((t) => t.managerId), [
+      'rewaida', HANY, 'perry', HALA, GANNAH, 'ahmed', 'shehata',
+    ]);
+  }
+});
+
+test('skipping BOTH the only teammate and the manager truly moves the cycle on', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    const pending = carry(f, 'rewaida');
+    const options = { workspace, carryOver: pending, skippedIds: ['rewaida-member-1', 'rewaida-self'] };
     assert.equal(next(f, [], options)?.managerId, HANY);
     assert.deepEqual(round(f, undefined, options).map((t) => t.managerId), [
       HANY, 'perry', HALA, GANNAH, 'ahmed', 'shehata',

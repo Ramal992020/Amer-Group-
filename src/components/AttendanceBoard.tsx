@@ -127,13 +127,13 @@ export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers,
                         const busy = st?.status === 'busy';
                         const justCopied = copiedId === person.id;
 
-                        const subtitle = person.isManager
-                          ? 'مدير — حضور فقط، بدون دور'
-                          : busy
-                            ? 'مشغول الآن مع عميل'
-                            : present
-                              ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
-                              : 'لم يحضر';
+                        const subtitle = busy
+                          ? 'مشغول الآن مع عميل'
+                          : present
+                            ? person.isManager
+                              ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
+                              : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
+                            : 'لم يحضر';
 
                         return (
                           <div

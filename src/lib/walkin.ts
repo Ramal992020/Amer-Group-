@@ -890,6 +890,11 @@ function cycleIndexOf(
  * Members of one team who are present and free — most deserving first
  * (fewest own turns, then earliest check-in). This is only the ORDER of the
  * manual picker; it never picks a person by itself.
+ *
+ * The manager's own attendance row is included like any other member: if a
+ * teammate is absent/busy, the manager can sit with the client himself — he
+ * just needs to be checked in (present) like everyone else, and his turn
+ * counts toward his own fairness count like a normal sales turn.
  */
 export function availableTeamMembers(
   managerId: string,
@@ -900,7 +905,6 @@ export function availableTeamMembers(
   return salesList
     .filter(
       (s) =>
-        !s.isManager &&
         s.managerId === managerId &&
         salesState[s.id]?.status === 'available' &&
         !excludeIds.includes(s.id),

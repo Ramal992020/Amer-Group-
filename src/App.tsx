@@ -957,7 +957,11 @@ function WalkInApp({
     [paused, salesState, history, managers, sales, heads, rotationOptions],
   );
 
-  /** كل أعضاء التيم اللي عليه الدور (بدون المدير) مع حالتهم، والأولوية للمتاحين. */
+  /**
+   * كل أعضاء التيم اللي عليه الدور مع حالتهم، والأولوية للمتاحين — والمدير
+   * نفسه يظهر كخيار عادي في القائمة (لو حاضر) عشان يقدر يقعد مع العميل لو
+   * حد من تيمه مش موجود، ودوره يُحسب كدور عادي زي أي سيلز في التيم.
+   */
   const teamRoster: TeamMemberOption[] = useMemo(() => {
     if (!nextTeam) return [];
     const priority = new Map(
@@ -966,7 +970,7 @@ function WalkInApp({
     const weight = (status: TeamMemberOption['status']) =>
       status === 'available' ? 0 : status === 'busy' ? 1 : 2;
     return sales
-      .filter((s) => s.managerId === nextTeam.managerId && !s.isManager)
+      .filter((s) => s.managerId === nextTeam.managerId)
       .map((s) => {
         const st = salesState[s.id];
         const status: TeamMemberOption['status'] = st?.status ?? 'absent';
@@ -978,6 +982,7 @@ function WalkInApp({
           coverCount: st?.coverCount ?? 0,
           checkInOrder: st?.checkInOrder ?? null,
           carried: nextTeam.carriedSalesId === s.id,
+          isManager: Boolean(s.isManager),
         };
       })
       .sort(
@@ -1810,7 +1815,7 @@ function WalkInApp({
                         الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم عند الدور. يمكنك تعديل ترتيب الفرق بالأسهم.
                       </p>
                       {teamRound.map((team, index) => {
-                        const members = sales.filter((s) => s.managerId === team.id && !s.isManager);
+                        const members = sales.filter((s) => s.managerId === team.id);
                         const membersAvailable = members.filter((s) => salesState[s.id]?.status === 'available').length;
                         const headName = heads.find((h) => h.id === team.headId)?.name ?? team.headId;
                         return (
@@ -1891,6 +1896,7 @@ function WalkInApp({
                                       )}
                                     >
                                       {s.name}
+                                      {s.isManager ? ' (مدير)' : ''}
                                       {st === 'busy' ? ' · مشغول' : st === 'absent' ? ' · لم يحضر' : ''}
                                     </span>
                                   );
