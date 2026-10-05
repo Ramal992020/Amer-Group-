@@ -653,3 +653,113 @@ test('active storage account never selects rotation policy; workspace context is
     setActiveAccount('');
   }
 });
+
+// ───────────────── Turn-order settings («طريقة ترتيب الأدوار») ─────────────────
+
+import { DEFAULT_TEAM_CYCLE, normalizeTeamCycle } from './walkin.ts';
+import type { TeamCycleSettings } from './walkin.ts';
+
+test('a custom cycle chosen in the app re-orders the rotation and can include any team', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    const custom: TeamCycleSettings = { mode: 'custom', order: ['tarek-osman', DINA, 'ahmed'] };
+    // The custom order IS the whole cycle — a team that never rotated before
+    // (Tarek Osman) participates, and the built-in six-team order is replaced.
+    assert.equal(next(f, [], { workspace, cycle: custom })?.managerId, 'tarek-osman');
+    assert.deepEqual(
+      teamOrderFrom(f.managers, undefined, custom).map((t) => t.id),
+      ['tarek-osman', DINA, 'ahmed'],
+    );
+    // The cycle continues in the chosen order and wraps back to its start.
+    assert.equal(next(f, [teamHistory(f, 'tarek-osman')], { workspace, cycle: custom })?.managerId, DINA);
+    assert.equal(next(f, [teamHistory(f, DINA)], { workspace, cycle: custom })?.managerId, 'ahmed');
+    assert.equal(next(f, [teamHistory(f, 'ahmed')], { workspace, cycle: custom })?.managerId, 'tarek-osman');
+    // Rounds follow the custom order too.
+    assert.deepEqual(round(f, undefined, { workspace, cycle: custom }).map((t) => t.managerId), [
+      'tarek-osman', DINA, 'ahmed',
+    ]);
+    assert.equal(computeNextTurn(f.state, [], 'khaled', [], f.heads, f.managers, f.sales, {
+      workspace, cycle: custom,
+    })?.managerId, 'tarek-osman');
+  }
+});
+
+test('an empty or unknown custom order safely produces no turn', () => {
+  const f = fixture();
+  assert.equal(next(f, [], { cycle: { mode: 'custom', order: [] } }), null);
+  assert.equal(next(f, [], { cycle: { mode: 'custom', order: ['ghost', 'removed-mgr'] } }), null);
+  assert.deepEqual(teamOrderFrom(f.managers, undefined, { mode: 'custom', order: ['ghost'] }), []);
+});
+
+test('a custom cycle drops deleted teams and duplicates, and never uses legacy name anchors', () => {
+  const f = fixture();
+  const custom: TeamCycleSettings = { mode: 'custom', order: ['rewaida', 'ghost', DINA, 'rewaida'] };
+  assert.deepEqual(teamOrderFrom(f.managers, undefined, custom).map((t) => t.id), ['rewaida', DINA]);
+
+  // A team deleted AFTER serving (old history) must not mis-anchor the cycle:
+  // custom orders are matched by id alone, never by the built-in slot names.
+  const withoutDina = fixture();
+  withoutDina.managers = withoutDina.managers.filter((m) => m.id !== DINA);
+  withoutDina.sales = withoutDina.sales.filter((s) => s.managerId !== DINA);
+  const withDina: TeamCycleSettings = { mode: 'custom', order: ['rewaida', DINA, 'ahmed'] };
+  assert.equal(
+    next(withoutDina, [teamHistory(f, DINA)], { cycle: withDina })?.managerId,
+    'rewaida',
+  );
+});
+
+test('without settings the rotation stays on the built-in fixed cycle', () => {
+  const f = fixture();
+  for (const cycle of [undefined, null, DEFAULT_TEAM_CYCLE, { mode: 'auto' as const, order: ['perry'] }]) {
+    assert.equal(next(f, [], { cycle })?.managerId, 'ahmed');
+    assert.deepEqual(teamOrderFrom(f.managers, undefined, cycle).map((t) => t.id), CYCLE);
+  }
+});
+
+test('carry-over and successor follow the custom cycle into a new day', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    const custom: TeamCycleSettings = { mode: 'custom', order: ['ahmed', 'tarek-osman', 'perry'] };
+    const history = [teamHistory(f, 'ahmed')];
+    const pending = next(f, history, { workspace, cycle: custom });
+    assert.equal(pending?.managerId, 'tarek-osman');
+    const rolled = carryOverForNewDay(null, pending, history, f.heads, workspace, 'new-day', f.managers, custom);
+    assert.equal(rolled?.managerId, 'tarek-osman');
+    assert.equal(successorTeam(f.managers, 'tarek-osman', custom)?.id, 'perry');
+    // An unserved carried team keeps the first turn tomorrow, in custom order too.
+    assert.equal(next(f, [], { workspace, carryOver: rolled, cycle: custom })?.managerId, 'tarek-osman');
+  }
+});
+
+test('turn-order settings survive storage, hydration, and junk payloads', () => {
+  withMemoryLocalStorage(() => {
+    const custom: TeamCycleSettings = { mode: 'custom', order: ['perry', 'ahmed'] };
+    savePersisted(
+      {
+        salesState: defaultSalesState(),
+        history: [],
+        counter: 0,
+        seq: 0,
+        startingHead: 'khaled',
+        carryOver: null,
+        lastResetAt: null,
+        teamCycle: custom,
+      },
+      'SITE',
+    );
+    assert.deepEqual(loadPersisted('SITE').teamCycle, custom);
+
+    // Junk shapes fall back to the safe default instead of crashing the boot.
+    assert.deepEqual(normalizeTeamCycle(undefined), DEFAULT_TEAM_CYCLE);
+    assert.deepEqual(normalizeTeamCycle(null), DEFAULT_TEAM_CYCLE);
+    assert.deepEqual(
+      normalizeTeamCycle({ mode: 'weird' as never, order: 'nope' as never }),
+      DEFAULT_TEAM_CYCLE,
+    );
+    assert.deepEqual(
+      normalizeTeamCycle({ mode: 'custom', order: ['ahmed', 42 as never, null as never] }),
+      { mode: 'custom', order: ['ahmed'] },
+    );
+    setActiveAccount('');
+  });
+});

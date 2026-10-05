@@ -212,12 +212,52 @@ export interface CarryOver {
   fromDate: string;
 }
 
+// ───────────────────────── Turn-order settings («الترتيب» tab) ─────────────────────────
+
+/**
+ * How the team rotation is ordered — chosen INSIDE the app instead of being
+ * hard-coded, so new managers/sales/heads join without touching the source.
+ *
+ *  • `auto`   — the built-in fixed cycle (`AUTOMATIC_TEAM_ORDER`), exactly the
+ *    behavior the app always had; teams added later do NOT rotate until they
+ *    are included.
+ *  • `custom` — the order picked in the «الترتيب» tab: `order` lists the
+ *    manager IDs that participate, in turn order. Unknown/deleted ids are
+ *    dropped safely, and any team not listed simply stays out of the cycle.
+ *
+ * The settings belong to the SHARED org chart (`OrgChart.cycle`), so SITE and
+ * RESTA always rotate with the same order on every device.
+ */
+export interface TeamCycleSettings {
+  mode: 'auto' | 'custom';
+  /** Manager IDs in turn order (custom mode). */
+  order: string[];
+}
+
+export const DEFAULT_TEAM_CYCLE: TeamCycleSettings = { mode: 'auto', order: [] };
+
+/** Accept any saved/remote payload and return a safe settings object. */
+export function normalizeTeamCycle(value?: TeamCycleSettings | null): TeamCycleSettings {
+  if (!value || typeof value !== 'object') return DEFAULT_TEAM_CYCLE;
+  return {
+    mode: value.mode === 'custom' ? 'custom' : 'auto',
+    order: Array.isArray(value.order)
+      ? value.order.filter((id): id is string => typeof id === 'string')
+      : [],
+  };
+}
+
 /** Explicit workspace context: never infer rotation rules from the storage account. */
 export interface RotationOptions {
   workspace?: string;
   carryOver?: CarryOver | null;
   /** Explicitly skipped sales IDs for either fixed-team workspace. */
   skippedIds?: string[];
+  /**
+   * How the TEAM cycle is ordered (the «الترتيب» tab settings). Absent/null
+   * means the built-in fixed cycle — exactly the pre-settings behavior.
+   */
+  cycle?: TeamCycleSettings | null;
 }
 
 /** Compact action record so undo restores the exact queue position, even after reloads. */
@@ -244,6 +284,12 @@ export interface PersistedWalkin {
   customSales?: SalesPerson[];
   /** Manual order override (list of sales IDs). */
   manualOrder?: string[];
+  /**
+   * Team rotation settings («الترتيب» tab). Part of the branch snapshot so the
+   * choice survives reloads and rides the normal cloud sync; the SHARED org
+   * row (`cycle`) is what keeps both branches on the same order.
+   */
+  teamCycle?: TeamCycleSettings;
   /** Skipped sales IDs for the current day. */
   skippedIds?: string[];
   /** Undo log (last actions first). */
@@ -276,6 +322,12 @@ export interface OrgChart {
   sales: SalesPerson[];
   /** Deleted member ids — they must not come back from the built-in defaults. */
   removedIds: string[];
+  /**
+   * Team rotation settings («الترتيب» tab) — shared with the roster so SITE and
+   * RESTA always turn in the same order. Absent in rows written before the
+   * setting existed (read as the automatic cycle).
+   */
+  cycle?: TeamCycleSettings;
 }
 
 const STORAGE_KEY = 'amer-walkin-v3';
@@ -342,6 +394,8 @@ export interface OrgChartSource {
   customManagers?: ManagerTeam[];
   customSales?: SalesPerson[];
   removedIds?: string[];
+  /** Team rotation settings (the «الترتيب» tab) riding the shared chart. */
+  cycle?: TeamCycleSettings;
 }
 
 /** Normalize any raw org chart (branch state, shared row, backup) into the three lists. */
@@ -354,6 +408,7 @@ export function hydrateOrgChart(parsed?: OrgChartSource | null): OrgChart {
     managers: mergeById(MANAGERS, parsed?.customManagers ?? parsed?.managers, removedIds),
     sales: mergeById(SALES, parsed?.customSales ?? parsed?.sales, removedIds),
     removedIds,
+    cycle: normalizeTeamCycle(parsed?.cycle),
   };
 }
 
@@ -366,6 +421,8 @@ export function orgChartKey(chart: OrgChart): string {
     managers: sortById(chart.managers),
     sales: sortById(chart.sales),
     removedIds: [...chart.removedIds].sort(),
+    // A cycle-only edit must count as a real edit (it re-orders both branches).
+    cycle: chart.cycle ? normalizeTeamCycle(chart.cycle) : undefined,
   });
 }
 
@@ -404,6 +461,11 @@ export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
     removedIds,
     orgRevision: typeof parsed.orgRevision === 'number' ? parsed.orgRevision : 0,
     updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+    // Accept both spellings: branch snapshots store `teamCycle`, the mirrored
+    // shared chart stores `cycle`.
+    teamCycle: normalizeTeamCycle(
+      parsed.teamCycle ?? (parsed as Partial<PersistedWalkin> & { cycle?: TeamCycleSettings }).cycle,
+    ),
   };
 }
 
@@ -476,7 +538,7 @@ export function mergeOrgCharts(primary: OrgChart, secondary: OrgChart): OrgChart
     (id) => !keptIds.has(id),
   );
 
-  return { heads, managers, sales, removedIds };
+  return { heads, managers, sales, removedIds, cycle: primary.cycle ?? secondary.cycle };
 }
 
 /**
@@ -501,6 +563,10 @@ export function mirrorOrgChart(account: string, chart: OrgChart, revision: numbe
       customManagers: chart.managers,
       customSales: chart.sales,
       removedIds: chart.removedIds,
+      // The turn-order settings belong to the chart — switch branch on this
+      // device and the same rotation order is already on screen. (hydrate()
+      // reads it back from the branch snapshot's `teamCycle` field.)
+      teamCycle: chart.cycle,
       orgRevision: revision,
     },
     other,
@@ -732,8 +798,36 @@ function automaticTeamIndex(managerId: string, managerName: string): number {
 // that team's roster. The engine therefore never proposes a sales name — it
 // only decides the team, so nothing here can be mistaken for an assignment.
 
-/** The six cycle slots resolved against the live org (custom IDs, saved names). */
-function resolveCycle(managersList: ManagerTeam[]): (ManagerTeam | null)[] {
+/**
+ * The active cycle slots.
+ *
+ *  • auto   — the fixed built-in six slots resolved against the live roster
+ *    (custom IDs, saved names). Slots may be `null` when a built-in team is no
+ *    longer in the roster; callers skip them exactly like before.
+ *  • custom — the order chosen in the «الترتيب» tab, resolved by manager id:
+ *    unknown/deleted ids are dropped, duplicates ignored, and any team NOT
+ *    listed simply does not rotate.
+ */
+function resolveCycle(
+  managersList: ManagerTeam[],
+  cycle?: TeamCycleSettings | null,
+): (ManagerTeam | null)[] {
+  const settings = normalizeTeamCycle(cycle);
+  // Custom mode is authoritative even when the list ends up empty: the editor
+  // blocks removing the last team, so an empty cycle here is an explicit choice.
+  if (settings.mode === 'custom') {
+    const byId = new Map(managersList.map((m) => [m.id, m] as const));
+    const seen = new Set<string>();
+    const ordered: ManagerTeam[] = [];
+    settings.order.forEach((id) => {
+      const team = byId.get(id);
+      if (team && !seen.has(id)) {
+        ordered.push(team);
+        seen.add(id);
+      }
+    });
+    return ordered;
+  }
   return AUTOMATIC_TEAM_ORDER.map(
     (team, index) =>
       managersList.find((m) => m.id === team.id) ??
@@ -743,9 +837,17 @@ function resolveCycle(managersList: ManagerTeam[]): (ManagerTeam | null)[] {
 }
 
 /** Slot of a manager inside the cycle — resolved by id first, then by saved name. */
-function cycleIndexOf(cycle: (ManagerTeam | null)[], managerId: string, managerName: string): number {
+function cycleIndexOf(
+  cycle: (ManagerTeam | null)[],
+  managerId: string,
+  managerName: string,
+  isCustom = false,
+): number {
   const byId = cycle.findIndex((team) => team?.id === managerId);
-  return byId >= 0 ? byId : automaticTeamIndex(managerId, managerName);
+  if (byId >= 0) return byId;
+  // The legacy name anchor only exists for the built-in six-slot cycle; a
+  // custom order is matched by id alone so an old name can never misplace it.
+  return isCustom ? -1 : automaticTeamIndex(managerId, managerName);
 }
 
 /**
@@ -808,8 +910,12 @@ export function computeNextTeam(
   headsList: HeadGroup[] = HEADS,
   options: RotationOptions = {},
 ): TeamTurn | null {
-  const cycle = resolveCycle(managersList);
+  const cycleSettings = normalizeTeamCycle(options.cycle);
+  const isCustom = cycleSettings.mode === 'custom';
+  const cycle = resolveCycle(managersList, cycleSettings);
   if (cycle.every((team) => !team)) return null;
+  const indexInCycle = (managerId: string, managerName: string): number =>
+    cycleIndexOf(cycle, managerId, managerName, isCustom);
   const excluded = options.skippedIds ?? [];
   const hasMembers = (team: ManagerTeam) =>
     availableTeamMembers(team.id, salesState, salesList, excluded).length > 0;
@@ -817,7 +923,7 @@ export function computeNextTeam(
   const carried = options.carryOver;
   const carriedIndex =
     carried && (carried.managerId || carried.managerName)
-      ? cycleIndexOf(cycle, carried.managerId, carried.managerName)
+      ? indexInCycle(carried.managerId, carried.managerName)
       : -1;
   const carriedTeam = carriedIndex >= 0 ? cycle[carriedIndex] : null;
   const servedToday = (managerId: string) => history.some((a) => a.managerId === managerId);
@@ -835,7 +941,7 @@ export function computeNextTeam(
 
   let previousIndex = -1;
   for (let i = history.length - 1; i >= 0; i--) {
-    const index = cycleIndexOf(cycle, history[i].managerId, history[i].managerName);
+    const index = indexInCycle(history[i].managerId, history[i].managerName);
     if (index >= 0) {
       previousIndex = index;
       break;
@@ -857,24 +963,27 @@ export function computeNextTeam(
 /**
  * The team cycle in turn order, rotated so `startManagerId` comes first — the
  * list the «الترتيب» tab renders. Managers only: the sales names never appear
- * as queue entries any more.
+ * as queue entries any more. `cycle` picks the custom order from the settings
+ * (or the built-in fixed cycle when absent).
  */
 export function teamOrderFrom(
   managersList: ManagerTeam[] = MANAGERS,
   startManagerId?: string,
+  cycle?: TeamCycleSettings | null,
 ): ManagerTeam[] {
-  const teams = resolveCycle(managersList).filter((team): team is ManagerTeam => Boolean(team));
+  const teams = resolveCycle(managersList, cycle).filter((team): team is ManagerTeam => Boolean(team));
   const startIndex = startManagerId ? teams.findIndex((team) => team.id === startManagerId) : -1;
   if (startIndex <= 0) return teams;
   return [...teams.slice(startIndex), ...teams.slice(0, startIndex)];
 }
 
-/** The team that follows `managerId` in the fixed cycle (cycle start when unknown). */
+/** The team that follows `managerId` in the active cycle (cycle start when unknown). */
 export function successorTeam(
   managersList: ManagerTeam[] = MANAGERS,
   managerId?: string | null,
+  cycle?: TeamCycleSettings | null,
 ): ManagerTeam | null {
-  const order = teamOrderFrom(managersList, managerId ?? undefined);
+  const order = teamOrderFrom(managersList, managerId ?? undefined, cycle);
   if (order.length === 0) return null;
   // No (or unknown) manager → the cycle simply starts at its first team.
   if (!managerId || order[0].id !== managerId) return order[0];
@@ -908,10 +1017,12 @@ function computeFixedTeamTurn(
   managersList: ManagerTeam[],
   salesList: SalesPerson[],
   carry: CarryOver | null | undefined,
+  cycle?: TeamCycleSettings | null,
 ): ComputedTurn | null {
   const turn = computeNextTeam(salesState, history, managersList, salesList, headsList, {
     carryOver: carry,
     skippedIds: excludeIds,
+    cycle,
   });
   return turn ? toTeamComputedTurn(turn) : null;
 }
@@ -935,6 +1046,7 @@ export function computeNextTurn(
       managersList,
       salesList,
       options.carryOver,
+      options.cycle,
     );
   }
 
@@ -1024,7 +1136,7 @@ export function predictFullRound(
     // The seed is redundant here: a pending carry-over is expressed by
     // `options.carryOver`, so the round is derived from state alone.
     const current = computeNextTeam(salesState, history, managersList, salesList, headsList, options);
-    return teamOrderFrom(managersList, current?.managerId)
+    return teamOrderFrom(managersList, current?.managerId, options.cycle)
       .filter((team) => availableTeamMembers(team.id, salesState, salesList, excluded).length > 0)
       .map((team, index) =>
         index === 0 && current
@@ -1082,6 +1194,7 @@ export function carryOverForNewDay(
   workspace?: string,
   fromDate = new Date().toISOString(),
   managersList: ManagerTeam[] = MANAGERS,
+  cycle?: TeamCycleSettings | null,
 ): CarryOver | null {
   if (currentCarry?.salesId || currentCarry?.managerId) return currentCarry;
 
@@ -1104,7 +1217,7 @@ export function carryOverForNewDay(
   if (usesFixedTeamRotation(workspace)) {
     // Carry the TEAM whose turn comes next — never the team that just served,
     // otherwise the new day would repeat it.
-    const team = successorTeam(managersList, lastAssignment.managerId);
+    const team = successorTeam(managersList, lastAssignment.managerId, cycle);
     if (!team) return currentCarry;
     return {
       salesId: '',

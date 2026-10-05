@@ -47,8 +47,16 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
 
 * `computeNextTeam()` (in `src/lib/walkin.ts`) decides *whose team* is on turn,
   starting from yesterday's unserved team (`carryOver.managerId`) and otherwise
-  continuing after the most recently served team in the fixed cycle
-  (`AUTOMATIC_TEAM_ORDER`). Teams with nobody available are skipped in place.
+  continuing after the most recently served team in the active cycle. Teams
+  with nobody available are skipped in place.
+* The cycle order itself is a **setting chosen in the app** («طريقة ترتيب
+  الأدوار» in the «الترتيب» tab), not a code constant:
+  `TeamCycleSettings` is either `auto` (the built-in `AUTOMATIC_TEAM_ORDER`,
+  the historical behavior) or `custom` (an explicit manager-ID order, so a
+  newly joined manager can be added to the rotation without touching the
+  source). The settings live on the **shared org chart** (`OrgChart.cycle`),
+  so SITE and RESTA always rotate with the same order; the branch snapshots
+  carry a copy as `PersistedWalkin.teamCycle` (read back by `hydrate`).
 * The sales who sits with the client is **chosen manually** from that team
   (`availableTeamMembers()` only orders the picker by fairness). Nothing in the
   engine may propose a sales name — `ComputedTurn.salesId` stays `''` for these
