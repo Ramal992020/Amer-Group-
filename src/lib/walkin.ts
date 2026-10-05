@@ -747,23 +747,30 @@ function toTurn(
 /**
  * One fixed automatic team cycle shared by RESTA and SITE:
  *
- *   1) team Ahmed Yossry    4) team Perry
- *   2) team Rewaida         5) team Hala Elfar
- *   3) team Youssef Shehata 6) team Dina Abdo  → back to team Ahmed Yossry …
+ *   1) Ahmed Yossry        5) Perry
+ *   2) Youssef Shehata     6) the team Hala Elfar is in
+ *   3) Rewaida             7) the team Gannah Elmalah is in
+ *   4) Hany Elshenawy      → back to Ahmed Yossry …
+ *
+ * Every slot is a PERSON, not a hard-coded team: the team that takes the slot is
+ * read from the LIVE roster, so the cycle keeps working when a team is renamed,
+ * when the person moves to another team, and when the person is a member of a
+ * team that carries somebody else's name («التيم اللي فيه فلان»).
  *
  * The pending person carried from yesterday stays pinned at #1, then the cycle
- * continues from their own team in this order (Rewaida → Youssef Shehata →
- * Perry → Hala Elfar → Dina Abdo → Ahmed Yossry → Rewaida …; Dina Abdo →
- * Ahmed Yossry → Rewaida → Youssef Shehata → Perry → Hala Elfar → Dina …).
- * A team with nobody available is skipped without re-ordering the others.
+ * continues from their own team in this order (Ahmed Yossry → Youssef Shehata →
+ * Rewaida → Hany Elshenawy → Perry → Hala Elfar's team → Gannah Elmalah's team →
+ * Ahmed Yossry …). A team with nobody available is skipped without re-ordering
+ * the others, and a team that already holds an earlier slot is never repeated.
  */
 export const AUTOMATIC_TEAM_ORDER = [
   { id: 'ahmed', name: 'Ahmed Yossry' },
-  { id: 'rewaida', name: 'Rewaida' },
   { id: 'shehata', name: 'Youssef Shehata' },
+  { id: 'rewaida', name: 'Rewaida' },
+  { id: 'hany-elshenawy', name: 'Hany Elshenawy' },
   { id: 'perry', name: 'Perry' },
   { id: 'hala-elfar', name: 'Hala Elfar' },
-  { id: 'dina-abdo', name: 'Dina Abdo' },
+  { id: 'gannah-elmalah', name: 'Gannah Elmalah' },
 ] as const;
 
 export function usesFixedTeamRotation(workspace?: string): boolean {
@@ -799,11 +806,37 @@ function automaticTeamIndex(managerId: string, managerName: string): number {
 // only decides the team, so nothing here can be mistaken for an assignment.
 
 /**
+ * The team one automatic slot points at, read from the LIVE roster:
+ *  1. the team whose id is the slot id (renames never break it);
+ *  2. the team whose (or whose manager's) name is the slot name — including the
+ *     legacy built-in slots and any custom id that spells the same name;
+ *  3. otherwise the team the PERSON belongs to — so a slot can name somebody
+ *     who is only a member of a team («التيم اللي فيه فلان»).
+ */
+function teamForAutomaticSlot(
+  slot: { id: string; name: string },
+  index: number,
+  managersList: ManagerTeam[],
+  salesList: SalesPerson[],
+): ManagerTeam | null {
+  const byId = managersList.find((m) => m.id === slot.id);
+  if (byId) return byId;
+  const byName = managersList.find((m) => automaticTeamIndex(m.id, m.name) === index);
+  if (byName) return byName;
+  const wanted = normalizeTeamName(slot.name);
+  const member = salesList.find(
+    (s) => normalizeTeamName(s.name) === wanted || normalizeTeamName(s.id) === normalizeTeamName(slot.id),
+  );
+  return member ? managersList.find((m) => m.id === member.managerId) ?? null : null;
+}
+
+/**
  * The active cycle slots.
  *
- *  • auto   — the fixed built-in six slots resolved against the live roster
- *    (custom IDs, saved names). Slots may be `null` when a built-in team is no
- *    longer in the roster; callers skip them exactly like before.
+ *  • auto   — the fixed built-in slots resolved against the live roster
+ *    (custom IDs, saved names, or the team a named person belongs to). Slots
+ *    are `null` when nobody in the roster fills them, or when the team already
+ *    holds an earlier slot; callers skip them exactly like before.
  *  • custom — the order chosen in the «الترتيب» tab, resolved by manager id:
  *    unknown/deleted ids are dropped, duplicates ignored, and any team NOT
  *    listed simply does not rotate.
@@ -811,6 +844,7 @@ function automaticTeamIndex(managerId: string, managerName: string): number {
 function resolveCycle(
   managersList: ManagerTeam[],
   cycle?: TeamCycleSettings | null,
+  salesList: SalesPerson[] = SALES,
 ): (ManagerTeam | null)[] {
   const settings = normalizeTeamCycle(cycle);
   // Custom mode is authoritative even when the list ends up empty: the editor
@@ -828,12 +862,14 @@ function resolveCycle(
     });
     return ordered;
   }
-  return AUTOMATIC_TEAM_ORDER.map(
-    (team, index) =>
-      managersList.find((m) => m.id === team.id) ??
-      managersList.find((m) => automaticTeamIndex(m.id, m.name) === index) ??
-      null,
-  );
+  const used = new Set<string>();
+  return AUTOMATIC_TEAM_ORDER.map((slot, index) => {
+    const team = teamForAutomaticSlot(slot, index, managersList, salesList);
+    // Two slots resolving to the same team would make it rotate twice a round.
+    if (!team || used.has(team.id)) return null;
+    used.add(team.id);
+    return team;
+  });
 }
 
 /** Slot of a manager inside the cycle — resolved by id first, then by saved name. */
@@ -912,7 +948,7 @@ export function computeNextTeam(
 ): TeamTurn | null {
   const cycleSettings = normalizeTeamCycle(options.cycle);
   const isCustom = cycleSettings.mode === 'custom';
-  const cycle = resolveCycle(managersList, cycleSettings);
+  const cycle = resolveCycle(managersList, cycleSettings, salesList);
   if (cycle.every((team) => !team)) return null;
   const indexInCycle = (managerId: string, managerName: string): number =>
     cycleIndexOf(cycle, managerId, managerName, isCustom);
@@ -970,11 +1006,59 @@ export function teamOrderFrom(
   managersList: ManagerTeam[] = MANAGERS,
   startManagerId?: string,
   cycle?: TeamCycleSettings | null,
+  salesList: SalesPerson[] = SALES,
 ): ManagerTeam[] {
-  const teams = resolveCycle(managersList, cycle).filter((team): team is ManagerTeam => Boolean(team));
+  const teams = resolveCycle(managersList, cycle, salesList).filter(
+    (team): team is ManagerTeam => Boolean(team),
+  );
   const startIndex = startManagerId ? teams.findIndex((team) => team.id === startManagerId) : -1;
   if (startIndex <= 0) return teams;
   return [...teams.slice(startIndex), ...teams.slice(0, startIndex)];
+}
+
+/**
+ * The list the «ترتيب المديرين» tab shows — the active cycle rotated so the team
+ * on turn comes first, with the day's manual order (the arrows on that tab) on
+ * top.
+ *
+ * The manual order only ever applies to the AUTOMATIC cycle. Once a custom
+ * order is chosen in «طريقة ترتيب الأدوار» it is the single source of truth for
+ * both branches, so a manual order left over from an earlier day can never
+ * display (or rotate) a different order than the one the manager picked — this
+ * is what used to make a customized order look like it had no effect at all.
+ */
+export function teamRoundFrom(
+  managersList: ManagerTeam[] = MANAGERS,
+  startManagerId?: string | null,
+  cycle?: TeamCycleSettings | null,
+  salesList: SalesPerson[] = SALES,
+  manualOrder: string[] = [],
+): ManagerTeam[] {
+  const natural = teamOrderFrom(managersList, startManagerId ?? undefined, cycle, salesList);
+  if (manualOrder.length === 0 || normalizeTeamCycle(cycle).mode === 'custom') return natural;
+  const rank = new Map(manualOrder.map((id, i) => [id, i] as const));
+  const known = natural
+    .filter((t) => rank.has(t.id))
+    .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  return [...known, ...natural.filter((t) => !rank.has(t.id))];
+}
+
+/**
+ * Swap two teams inside a CUSTOM order, keeping the rest of the saved order
+ * untouched — what the arrows on «ترتيب المديرين» do while a custom cycle is
+ * active, so the screen and the rotation engine can never disagree.
+ */
+export function swapInCustomOrder(
+  order: string[],
+  firstId: string,
+  secondId: string,
+): string[] {
+  const next = [...order];
+  const from = next.indexOf(firstId);
+  const to = next.indexOf(secondId);
+  if (from < 0 || to < 0 || from === to) return next;
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
 }
 
 /** The team that follows `managerId` in the active cycle (cycle start when unknown). */
@@ -982,8 +1066,9 @@ export function successorTeam(
   managersList: ManagerTeam[] = MANAGERS,
   managerId?: string | null,
   cycle?: TeamCycleSettings | null,
+  salesList: SalesPerson[] = SALES,
 ): ManagerTeam | null {
-  const order = teamOrderFrom(managersList, managerId ?? undefined, cycle);
+  const order = teamOrderFrom(managersList, managerId ?? undefined, cycle, salesList);
   if (order.length === 0) return null;
   // No (or unknown) manager → the cycle simply starts at its first team.
   if (!managerId || order[0].id !== managerId) return order[0];
@@ -1136,7 +1221,7 @@ export function predictFullRound(
     // The seed is redundant here: a pending carry-over is expressed by
     // `options.carryOver`, so the round is derived from state alone.
     const current = computeNextTeam(salesState, history, managersList, salesList, headsList, options);
-    return teamOrderFrom(managersList, current?.managerId, options.cycle)
+    return teamOrderFrom(managersList, current?.managerId, options.cycle, salesList)
       .filter((team) => availableTeamMembers(team.id, salesState, salesList, excluded).length > 0)
       .map((team, index) =>
         index === 0 && current
@@ -1195,6 +1280,7 @@ export function carryOverForNewDay(
   fromDate = new Date().toISOString(),
   managersList: ManagerTeam[] = MANAGERS,
   cycle?: TeamCycleSettings | null,
+  salesList: SalesPerson[] = SALES,
 ): CarryOver | null {
   if (currentCarry?.salesId || currentCarry?.managerId) return currentCarry;
 
@@ -1217,7 +1303,7 @@ export function carryOverForNewDay(
   if (usesFixedTeamRotation(workspace)) {
     // Carry the TEAM whose turn comes next — never the team that just served,
     // otherwise the new day would repeat it.
-    const team = successorTeam(managersList, lastAssignment.managerId, cycle);
+    const team = successorTeam(managersList, lastAssignment.managerId, cycle, salesList);
     if (!team) return currentCarry;
     return {
       salesId: '',

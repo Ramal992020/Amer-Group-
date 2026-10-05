@@ -32,7 +32,9 @@ import {
   MANAGERS as DEFAULT_MANAGERS,
   SALES as DEFAULT_SALES,
   computeNextTeam,
+  swapInCustomOrder,
   teamOrderFrom,
+  teamRoundFrom,
   availableTeamMembers,
   usesFixedTeamRotation,
   carryOverForNewDay,
@@ -985,21 +987,24 @@ function WalkInApp({
       );
   }, [nextTeam, sales, salesState]);
 
-  /** ترتيب الفرق (بالمديرين) بدءاً من التيم اللي عليه الدور. */
+  /**
+   * ترتيب الفرق (بالمديرين) بدءاً من التيم اللي عليه الدور — حسب طريقة الترتيب
+   * المختارة في «طريقة ترتيب الأدوار» (الدورة التلقائية أو الدورة المخصّصة).
+   */
   const naturalTeamOrder = useMemo(
-    () => teamOrderFrom(managers, nextTeam?.managerId),
-    [managers, nextTeam],
+    () => teamOrderFrom(managers, nextTeam?.managerId, cycleSettings, sales),
+    [managers, nextTeam, cycleSettings, sales],
   );
 
-  const teamRound = useMemo(() => {
-    if (manualOrder.length === 0) return naturalTeamOrder;
-    const rank = new Map(manualOrder.map((id, i) => [id, i]));
-    const known = naturalTeamOrder
-      .filter((t) => rank.has(t.id))
-      .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
-    const unknown = naturalTeamOrder.filter((t) => !rank.has(t.id));
-    return [...known, ...unknown];
-  }, [naturalTeamOrder, manualOrder]);
+  /**
+   * القائمة المعروضة على الشاشة: نفس دورة المحرّك تماماً، والترتيب اليدوي
+   * (أسهم التبويب) يُطبَّق فوق الدورة التلقائية فقط — لأن الدورة المخصّصة هي
+   * المرجع الوحيد لما اختاره المدير.
+   */
+  const teamRound = useMemo(
+    () => teamRoundFrom(managers, nextTeam?.managerId, cycleSettings, sales, manualOrder),
+    [managers, nextTeam, cycleSettings, sales, manualOrder],
+  );
 
   /** هل يوجد ترتيب يدوي فعّال فعلاً (يتجاهل أي أثر قديم بالاسم القديم للسيلز)? */
   const manualOrderActive = useMemo(
@@ -1010,16 +1015,34 @@ function WalkInApp({
   const moveInOrder = (fromIndex: number, dir: -1 | 1) => {
     const to = fromIndex + dir;
     if (to < 0 || to >= teamRound.length) return;
+    const moved = dir === -1 ? 'تم تقديم التيم في الترتيب' : 'تم تأخير التيم في الترتيب';
+    // دورة مخصّصة: التعديل يذهب لنفس ترتيب الدورة المحفوظ (ويُنشر للفرع الآخر)،
+    // فلا يختلف ما يظهر على الشاشة عمّا يشتغل به المحرّك.
+    if (cycleSettings.mode === 'custom') {
+      const next = swapInCustomOrder(
+        cycleSettings.order,
+        teamRound[fromIndex].id,
+        teamRound[to].id,
+      );
+      updateCycleSettings({ mode: 'custom', order: next });
+      toast('success', moved);
+      return;
+    }
     const ids = teamRound.map((t) => t.id);
     const [item] = ids.splice(fromIndex, 1);
     ids.splice(to, 0, item);
     setManualOrder(ids);
-    toast('success', dir === -1 ? 'تم تقديم التيم في الترتيب' : 'تم تأخير التيم في الترتيب');
+    toast('success', moved);
   };
 
   const resetOrder = () => {
     setManualOrder([]);
-    toast('info', 'تمت العودة لترتيب الفرق التلقائي');
+    toast(
+      'info',
+      cycleSettings.mode === 'custom'
+        ? 'الترتيب المخصّص هو المعتمد — عدّله من «طريقة ترتيب الأدوار»'
+        : 'تمت العودة لترتيب الفرق التلقائي',
+    );
   };
 
   /** الفرق الجاية اللي عليها الدور فعلاً (اللي لها سيلز متاح). */
@@ -1305,7 +1328,7 @@ function WalkInApp({
     const servedToday = carryOver?.managerId
       ? history.some((a) => a.managerId === carryOver.managerId)
       : false;
-    setCarryOver(carryOverForNewDay(servedToday ? null : carryOver, pending, history, heads, account, undefined, managers, cycleSettings));
+    setCarryOver(carryOverForNewDay(servedToday ? null : carryOver, pending, history, heads, account, undefined, managers, cycleSettings, sales));
     // Keep saved custom-team members in both RESTA and SITE's fresh attendance map.
     setSalesState(createNewDaySalesState(account, sales));
     setHistory([]);
@@ -1886,6 +1909,7 @@ function WalkInApp({
                     <CycleSettingsPanel
                       managers={managers}
                       heads={heads}
+                      sales={sales}
                       settings={cycleSettings}
                       onChange={updateCycleSettings}
                     />

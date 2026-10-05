@@ -8,7 +8,7 @@
 
 import type { ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Check, Info, Plus, RotateCcw, Settings2, X } from 'lucide-react';
-import type { HeadGroup, ManagerTeam, TeamCycleSettings } from '../lib/walkin';
+import type { HeadGroup, ManagerTeam, SalesPerson, TeamCycleSettings } from '../lib/walkin';
 import { teamOrderFrom } from '../lib/walkin';
 import { SectionTitle } from './ui';
 import { cn } from '../utils/cn';
@@ -16,19 +16,24 @@ import { cn } from '../utils/cn';
 interface CycleSettingsPanelProps {
   managers: ManagerTeam[];
   heads: HeadGroup[];
+  /**
+   * قائمة السيلز الكاملة — الدورة التلقائية تُحسب من الشخصيات، فالتيم اللي فيه
+   * «هالة الفار» أو «جنة الملا» يتحدد من مكان وجودهم في الهيكل الحالي.
+   */
+  sales: SalesPerson[];
   /** The saved settings (shared by SITE & RESTA). */
   settings: TeamCycleSettings;
   /** Persist the new settings and publish them to the other branch. */
   onChange: (next: TeamCycleSettings) => void;
 }
 
-export function CycleSettingsPanel({ managers, heads, settings, onChange }: CycleSettingsPanelProps) {
+export function CycleSettingsPanel({ managers, heads, sales, settings, onChange }: CycleSettingsPanelProps) {
   const isCustom = settings.mode === 'custom';
   const headName = (headId: string): string =>
     heads.find((h) => h.id === headId)?.name ?? headId;
 
   // الدورة الفعّالة الآن — نفس القائمة التي يشتغل بها محرّك التناوب.
-  const effective = teamOrderFrom(managers, undefined, settings);
+  const effective = teamOrderFrom(managers, undefined, settings, sales);
   const inCycleIds = new Set(effective.map((t) => t.id));
   // الوضع المخصص: الترتيب المحفوظ مطابقاً بالهيكل الحالي (بالتيمات المحذوفة تُتجاهل).
   const customTeams = settings.order
@@ -189,7 +194,7 @@ export function CycleSettingsPanel({ managers, heads, settings, onChange }: Cycl
         {modeCard(
           'auto',
           'الدورة التلقائية',
-          'نفس الترتيب الثابت المدمج في التطبيق — التيمات الجديدة لا تدخل الدورة تلقائياً.',
+          'الترتيب المدمج: Ahmed Yossry ← Youssef Shehata ← Rewaida ← Hany Elshenawy ← Perry ← التيم اللي فيه Hala Elfar ← التيم اللي فيه Gannah Elmalah. أي تيم جديد لا يدخل الدورة تلقائياً.',
         )}
         {modeCard(
           'custom',
