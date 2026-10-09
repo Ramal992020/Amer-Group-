@@ -983,6 +983,28 @@ export function shiftedSalesFor(
     }));
 }
 
+/**
+ * Only the members who were on turn BEFORE the sales who actually served are
+ * «Shiffted ❌». Example: Hala is on turn but absent / busy with another client
+ * → «Sales : Hala Shiffted ❌», then the next sales in the order serves. Members
+ * who come AFTER the serving sales in the turn order are not written at all.
+ * If the serving sales is outside the chain (e.g. not found), nothing is cut.
+ */
+export function shiftedBeforeServer(
+  managerId: string,
+  servingSalesId: string,
+  shifted: ShiftedSalesInfo[],
+  salesState: Record<string, SalesState>,
+  salesList: SalesPerson[] = SALES,
+  carriedSalesId?: string | null,
+): ShiftedSalesInfo[] {
+  const order = teamTurnOrder(managerId, salesState, salesList, carriedSalesId).map((s) => s.id);
+  const idx = order.indexOf(servingSalesId);
+  if (idx < 0) return shifted;
+  const before = new Set(order.slice(0, idx));
+  return shifted.filter((s) => before.has(s.id));
+}
+
 function teamTurn(
   team: ManagerTeam,
   reason: string,
