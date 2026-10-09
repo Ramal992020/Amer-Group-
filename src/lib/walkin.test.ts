@@ -15,6 +15,7 @@ import {
   predictFullRound,
   savePersisted,
   setActiveAccount,
+  shiftedSalesFor,
   successorTeam,
   swapInCustomOrder,
   teamOrderFrom,
@@ -1049,5 +1050,88 @@ test('teamTurnOrder matches availableTeamMembers for the available prefix', () =
     full.map((s) => s.id),
     picker.map((s) => s.id),
     'the statement chain and the picker order never disagree',
+  );
+});
+
+// ───── سطور «Shiffted ❌» التلقائية — من علامة «مشغول / متاح» على شاشة الاختيار ─────
+
+test('busy and absent on-turn members are written «Shiffted ❌» automatically', () => {
+  const f = fixture(3);
+  const [a, b, c] = f.sales.filter((s) => s.managerId === 'ahmed' && !s.isManager);
+  // a: AVAILABLE — he takes the client; b: BUSY with another client; c: ABSENT.
+  f.state[a.id] = { ...f.state[a.id], status: 'available', walkCount: 2 };
+  f.state[b.id] = { ...f.state[b.id], status: 'busy', walkCount: 0 };
+  f.state[c.id] = { ...f.state[c.id], status: 'absent', walkCount: 0, checkInOrder: null };
+
+  const shifted = shiftedSalesFor('ahmed', f.state, f.sales);
+  assert.deepEqual(
+    shifted,
+    [
+      { id: b.id, name: b.name, status: 'busy' },
+      { id: c.id, name: c.name, status: 'absent' },
+    ],
+    'both are in the statement with NO manual marking — the status mark decides',
+  );
+  assert.equal(
+    shifted.some((s) => s.id === a.id),
+    false,
+    'the available sales who serves the client is never written as shifted',
+  );
+});
+
+test('a member tapped out on the assign screen drops out of the automatic lines', () => {
+  const f = fixture(2);
+  const [a, b] = f.sales.filter((s) => s.managerId === 'rewaida' && !s.isManager);
+  f.state[a.id] = { ...f.state[a.id], status: 'busy' };
+  f.state[b.id] = { ...f.state[b.id], status: 'absent', checkInOrder: null };
+
+  assert.deepEqual(
+    shiftedSalesFor('rewaida', f.state, f.sales).map((s) => s.id),
+    [a.id, b.id],
+  );
+  assert.deepEqual(
+    shiftedSalesFor('rewaida', f.state, f.sales, null, [a.id]).map((s) => s.id),
+    [b.id],
+    'the excluded member is the only manual exception',
+  );
+  assert.deepEqual(
+    shiftedSalesFor('rewaida', f.state, f.sales, null, []).map((s) => s.id),
+    [a.id, b.id],
+    'tapping him again puts him back in the statement',
+  );
+});
+
+test('the automatic lines keep the carried person first, exactly like the picker', () => {
+  const f = fixture(3);
+  const members = f.sales.filter((s) => s.managerId === 'ahmed' && !s.isManager);
+  const carried = members[members.length - 1];
+  // Yesterday's carried person is BUSY and holds the worst fairness position.
+  f.state[carried.id] = { ...f.state[carried.id], status: 'busy', walkCount: 9 };
+  f.state[members[0].id] = { ...f.state[members[0].id], status: 'available' };
+  f.state[members[1].id] = { ...f.state[members[1].id], status: 'absent', checkInOrder: null };
+
+  const shifted = shiftedSalesFor('ahmed', f.state, f.sales, carried.id);
+  assert.equal(shifted[0].id, carried.id, 'the carried member leads the statement lines');
+  assert.deepEqual(
+    shifted.map((s) => s.id),
+    teamTurnOrder('ahmed', f.state, f.sales, carried.id)
+      .filter((s) => f.state[s.id]?.status !== 'available')
+      .map((s) => s.id),
+    'the statement chain and the picker chain never disagree',
+  );
+});
+
+test('a member with no attendance record at all counts as «لم يحضر»', () => {
+  const f = fixture(2);
+  const [a, b] = f.sales.filter((s) => s.managerId === 'shehata' && !s.isManager);
+  f.state[a.id] = { ...f.state[a.id], status: 'busy' };
+  delete f.state[b.id]; // never checked in on any device
+
+  assert.deepEqual(
+    shiftedSalesFor('shehata', f.state, f.sales).map((s) => [s.id, s.status]),
+    [
+      [a.id, 'busy'],
+      [b.id, 'absent'],
+    ],
   );
 });

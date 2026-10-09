@@ -11,7 +11,10 @@ interface Props {
    * No sales name is proposed (the sales is picked manually when the turn comes).
    */
   next: { managerName: string } | null;
-  /** On-turn members who were skipped (busy / absent) — «Shiffted ❌» lines. */
+  /**
+   * On-turn members skipped AUTOMATICALLY because their status mark was busy or
+   * absent — one «Shiffted ❌» line each (see `shiftedSalesFor`).
+   */
   shifted?: ShiftedSalesInfo[];
   onClose: () => void;
 }
@@ -23,22 +26,37 @@ function visitHeadline(visit: VisitType): string {
   return 'Walk in';
 }
 
+/**
+ * The statement that gets copied — ONE source for both the clipboard and the
+ * tests. Order: the branch line, the AUTOMATIC «Shiffted ❌» lines (every
+ * busy / لم يحضر member of the team on turn), the sales who served, Manager,
+ * Head, then «Next» — the literal next team in the cycle.
+ */
+export function statementText(
+  assignment: Assignment,
+  next: { managerName: string } | null,
+  shifted: ShiftedSalesInfo[] = [],
+): string {
+  const lines = [`${visitHeadline(assignment.visitType ?? 'walkin')} Done ✅`];
+  shifted.forEach((s) => lines.push(`Sales : ${s.name} Shiffted ❌`));
+  lines.push(`Sales : ${assignment.salesName} Done✅`);
+  lines.push(`Manager : ${assignment.managerName}`);
+  lines.push(`Head : ${assignment.headName}`);
+  lines.push(`Next : ${next ? `تيم ${next.managerName}` : '—'}`);
+  return lines.join('\n');
+}
+
 export function DoneReceipt({ assignment, next, shifted = [], onClose }: Props) {
   const [copied, setCopied] = useState(false);
 
   const visit = assignment.visitType ?? 'walkin';
   const title = `${visitHeadline(visit)} Done ✅`;
 
-  // البيان المطلوب: الفرع، ثم سطر «Sales : … Shiffted ❌» لكل سيلز اتخطى
-  // (مشغول / مش موجود)، ثم السيلز اللي أخد العميل (Done ✅)، المدير، الهيد،
-  // ثم «Next» — اللي عليه الدور في الدورة عامة حتى لو لم يحضر.
-  const lines = [title];
-  shifted.forEach((s) => lines.push(`Sales : ${s.name} Shiffted ❌`));
-  lines.push(`Sales : ${assignment.salesName} Done✅`);
-  lines.push(`Manager : ${assignment.managerName}`);
-  lines.push(`Head : ${assignment.headName}`);
-  lines.push(`Next : ${next ? `تيم ${next.managerName}` : '—'}`);
-  const text = lines.join('\n');
+  // البيان المطلوب: الفرع، ثم سطر «Sales : … Shiffted ❌» لكل سيلز مشغول / لم
+  // يحضر من تيم الدور (تلقائي من علامة الحالة)، ثم السيلز اللي أخد العميل
+  // (Done ✅)، المدير، الهيد، ثم «Next» — اللي عليه الدور في الدورة عامة حتى لو
+  // لم يحضر.
+  const text = statementText(assignment, next, shifted);
 
   const copy = async () => {
     try {
@@ -98,7 +116,7 @@ export function DoneReceipt({ assignment, next, shifted = [], onClose }: Props) 
               </Row>
             ))}
             <p dir="rtl" className="pl-[106px] text-[10.5px] font-semibold text-ink-400">
-              كانوا على الدور وتم تخطيهم (مشغول / مش موجود)
+              كانوا على الدور واتخطوا تلقائياً (مشغول / لم يحضر)
             </p>
           </div>
         )}
