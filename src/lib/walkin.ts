@@ -52,8 +52,9 @@ export type ShiftedReason = 'busy' | 'absent';
 
 /**
  * A team member who was on turn but got skipped — busy with another client or
- * not present. Marked MANUALLY on the assign screen, one `Sales : … Shiffted ❌`
- * line each in the receipt (`DoneReceipt`).
+ * not present. Written AUTOMATICALLY (one `Sales : … Shiffted ❌` line each in
+ * the receipt, `DoneReceipt`) from the busy/available mark on the assign screen;
+ * see `shiftedSalesFor()`.
  */
 export interface ShiftedSalesInfo {
   id: string;
@@ -949,6 +950,37 @@ export function teamTurnOrder(
   const carried = ordered.find((s) => s.id === carriedSalesId);
   if (!carried) return ordered;
   return [carried, ...ordered.filter((s) => s.id !== carriedSalesId)];
+}
+
+/**
+ * The «Shiffted ❌» lines of the statement — decided AUTOMATICALLY by the
+ * busy/available mark shown on the assign screen.
+ *
+ * Every member of the team on turn whose status is `busy` (مشغول) or `absent`
+ * (لم يحضر) is written as one `Sales : … Shiffted ❌` line, in `teamTurnOrder()`
+ * order, so the statement and the picker read the same chain. The available
+ * members — including the one serving the client — can never appear here.
+ *
+ * `excludeIds` is the only manual input left: a member the manager tapped on the
+ * assign screen to keep OUT of the statement.
+ */
+export function shiftedSalesFor(
+  managerId: string,
+  salesState: Record<string, SalesState>,
+  salesList: SalesPerson[] = SALES,
+  carriedSalesId?: string | null,
+  excludeIds: string[] = [],
+): ShiftedSalesInfo[] {
+  return teamTurnOrder(managerId, salesState, salesList, carriedSalesId)
+    .filter((s) => {
+      const status = salesState[s.id]?.status ?? 'absent';
+      return status !== 'available' && !excludeIds.includes(s.id);
+    })
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      status: salesState[s.id]?.status === 'busy' ? ('busy' as const) : ('absent' as const),
+    }));
 }
 
 function teamTurn(
