@@ -47,6 +47,20 @@ export const VISIT_LABELS: Record<VisitType, string> = {
   resta: 'Walk in Resta',
 };
 
+/** Why a skipped sales is written as «Shiffted ❌» in the statement. */
+export type ShiftedReason = 'busy' | 'absent';
+
+/**
+ * A team member who was on turn but got skipped — busy with another client or
+ * not present. Marked MANUALLY on the assign screen, one `Sales : … Shiffted ❌`
+ * line each in the receipt (`DoneReceipt`).
+ */
+export interface ShiftedSalesInfo {
+  id: string;
+  name: string;
+  status: ShiftedReason;
+}
+
 export interface Assignment {
   id: string;
   n: number;
@@ -61,6 +75,8 @@ export interface Assignment {
   substituted: boolean;
   originalSalesName?: string;
   visitType?: VisitType;
+  /** Skipped on-turn members (busy/absent) — printed as «Shiffted ❌» lines. */
+  shiftedSales?: ShiftedSalesInfo[];
 }
 
 export interface ComputedTurn {
@@ -910,6 +926,29 @@ export function availableTeamMembers(
         !excludeIds.includes(s.id),
     )
     .sort((a, b) => sortByAttendance(a, b, salesState));
+}
+
+/**
+ * The team's FULL turn order — including members who are busy or absent —
+ * the order the receipt reads the skipped «Shiffted ❌» names from.
+ *
+ * Yesterday's carried person is pinned first, then the same fairness order the
+ * manual picker uses (fewest own turns, then earliest check-in). It is exactly
+ * `availableTeamMembers()` without dropping the non-available members, so the
+ * statement and the screen can never disagree about who was on turn before whom.
+ */
+export function teamTurnOrder(
+  managerId: string,
+  salesState: Record<string, SalesState>,
+  salesList: SalesPerson[] = SALES,
+  carriedSalesId?: string | null,
+): SalesPerson[] {
+  const members = salesList.filter((s) => s.managerId === managerId);
+  const ordered = [...members].sort((a, b) => sortByAttendance(a, b, salesState));
+  if (!carriedSalesId) return ordered;
+  const carried = ordered.find((s) => s.id === carriedSalesId);
+  if (!carried) return ordered;
+  return [carried, ...ordered.filter((s) => s.id !== carriedSalesId)];
 }
 
 function teamTurn(
