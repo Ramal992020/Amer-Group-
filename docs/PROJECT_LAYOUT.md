@@ -64,9 +64,19 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
 * The «الترتيب» tab renders `teamOrderFrom()` — managers, one row each, with
   their roster and the arrow buttons that write to `manualOrder` (manager IDs).
 * The receipt (`DoneReceipt`) is exactly:
-  `Walk in (Branch) Done ✅ / Sales : X Done✅ / Manager : … / Head : … / Next : …`
-  where **Next is the next manager only** (no sales name). There is no
-  `(shiftted)` line any more — the substitute concept is gone from the flow.
+  `Walk in (Branch) Done ✅ / [Sales : S Shiffted ❌ …] / Sales : X Done✅ /
+  Manager : … / Head : … / Next : تيم …`
+  * **Shiffted ❌ lines are optional and MANUAL**: on the assign screen, tapping
+    a busy or absent member marks him «Shiffted» (`shiftedIds` in `App` →
+    `Assignment.shiftedSales`, read from `teamTurnOrder()` so the statement and
+    the picker can never disagree about the order). Each marked member prints
+    one `Sales : … Shiffted ❌` line before the `Done✅` line — «كان على الدور
+    واتخطى (مشغول / مش موجود)». Available members can never be marked.
+  * **Next is the LITERAL next team in the cycle** (`successorTeam()` after the
+    served team) — even when nobody from that team attended. The engine's own
+    rotation (`computeNextTeam`) still skips empty teams; only the written
+    statement names the pure-cycle successor, and with the plain team name
+    (no attendance note).
 * A carry-over is consumed when its team is served (`managerId` match in
   `confirmWith`), so a served team is never pinned again.
 
