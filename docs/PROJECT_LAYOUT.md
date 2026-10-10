@@ -68,45 +68,16 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
   Manager : … / Head : … / Next : تيم …`
   * **Every member card on the assign screen carries his status mark** —
     «متاح» / «مشغول» / «لم يحضر» (`STATUS_BADGE` in `CurrentTurn`), and only the
-    available ones can be picked (`isPickableForClient()`).
+    available ones can be picked.
   * **Shiffted ❌ lines are AUTOMATIC** — `shiftedSalesFor()` (`src/lib/walkin.ts`)
     returns every member of the team on turn whose status is `busy` or `absent`,
     in `teamTurnOrder()` order, so the statement and the picker can never
     disagree. App derives them (`shiftedMembers`) and saves them on the
     assignment as `Assignment.shiftedSales`; each one prints a
-    `Sales : … Shiffted ❌` line before the `Done✅` line, cut down by
-    `shiftedBeforeServer()` to the members who were on turn BEFORE the sales
-    who served. Available members — including the sales who serves the client —
-    can never appear there. The only manual control over the LINES is the
-    *exception*: tapping a busy/absent card keeps him out of the statement
-    (`unshiftedIds`), tapping again puts him back.
-
-## Busy / available is a MANUAL decision of the manager
-
-`busy` does NOT mean «sitting with a client» — a sales can be busy with
-something outside the branch, so the MANAGER marks him, and marks him back:
-
-* The mark itself is `withBusyMark(state, id, busy)` (`src/lib/walkin.ts`),
-  used by `markBusy` / `freeSales` / `setSalesBusy` in `App.tsx`. It changes
-  **only** `status`: `checkInOrder` / `checkInTime` / `walkCount` stay, so the
-  fairness order and the statement chain do not move. It refuses to mark an
-  absent member busy and never creates a row for an unknown id.
-* **شاشة الحضور** (`AttendanceBoard`): a present and available member gets a
-  «مشغول» button; a busy member gets «متاح» (this replaced «إنهاء»). The label
-  is just «مشغول» — never «مشغول مع عميل».
-* **شاشة اختيار السيلز** (`CurrentTurn`): under every PRESENT member of the team
-  on turn there is «علّمه مشغول» / «خلّيه متاح». A busy member is not pickable,
-  and marking the chosen one busy CANCELS the choice
-  (`selectionAfterStatusChange()`, also run in an effect so a mark made on the
-  attendance board while the modal is open clears it too). The card is a
-  `div role="button"` because it now hosts that inner button.
-* A sales who takes a client is still marked busy **automatically** by
-  `confirmWith`; only the manager's «متاح» returns him — nothing frees him on a
-  timer.
-* The statement follows with no extra rule: a hand-marked busy member is
-  `busy`, so `shiftedSalesFor()` picks him up and `shiftedBeforeServer()` writes
-  him only if his turn was before the sales who took the client. Marking busy
-  also clears a previous `unshiftedIds` exception for him.
+    `Sales : … Shiffted ❌` line before the `Done✅` line. Available members —
+    including the sales who serves the client — can never appear there. The only
+    manual control left is the *exception*: tapping a busy/absent card keeps him
+    out of the statement (`unshiftedIds`), tapping again puts him back.
   * `statementText()` (in `DoneReceipt`) is the single source of the copied text,
     shared by the clipboard and the tests.
   * **Next is the LITERAL next team in the cycle** (`successorTeam()` after the
