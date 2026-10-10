@@ -6,19 +6,24 @@ import {
   MANAGERS,
   SALES,
   availableTeamMembers,
+  canAdoptRemoteOrg,
   carryOverForNewDay,
   computeNextTeam,
   computeNextTurn,
+  computeTurnPlan,
   createNewDaySalesState,
   defaultSalesState,
   loadPersisted,
+  mirrorOrgChart,
   predictFullRound,
+  receiptText,
   savePersisted,
   setActiveAccount,
   successorTeam,
   swapInCustomOrder,
   teamOrderFrom,
   teamRoundFrom,
+  visitHeadline,
 } from './walkin.ts';
 import type {
   Assignment,
@@ -26,10 +31,12 @@ import type {
   ComputedTurn,
   HeadGroup,
   ManagerTeam,
+  OrgChart,
   PersistedWalkin,
   RotationOptions,
   SalesPerson,
   SalesState,
+  ShiftedTeam,
   TeamTurn,
   TurnIdentity,
 } from './walkin.ts';
@@ -979,4 +986,300 @@ test('a newly added manager joins the custom cycle where the manager put it', ()
     })?.managerId,
     added.id,
   );
+});
+
+// ───────────── «الدور الحالي» يظهر حتى لو محدش حضر + التخطي ─────────────
+
+/** Everybody in the roster is absent (nobody checked in). */
+function everyoneAbsent(f: Fixture): void {
+  f.sales.forEach((s) => {
+    f.state[s.id].status = 'absent';
+  });
+}
+
+const plan = (
+  f: Fixture,
+  history: Assignment[] = [],
+  options: RotationOptions = {},
+) => computeTurnPlan(f.state, history, f.managers, f.sales, f.heads, { workspace: 'RESTA', ...options });
+
+test('the team on turn is shown even when nobody has checked in', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    everyoneAbsent(f);
+    const turn = plan(f, [], { workspace });
+    assert.equal(turn.onTurn?.id, 'ahmed');
+    assert.equal(turn.serving, null);
+    // Every team of the cycle is passed over, flagged as «nobody attended».
+    assert.deepEqual(turn.shiftedTeams.map((t) => t.managerId), CYCLE);
+    assert.ok(turn.shiftedTeams.every((t) => t.reason === 'allAbsent'));
+    // The legacy single-team API keeps returning only the serving team.
+    assert.equal(next(f, [], { workspace }), null);
+  }
+});
+
+test('an absent team on turn is shifted, and the next present team serves', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    setTeamStatus(f, 'ahmed', 'absent');
+    const turn = plan(f, [], { workspace });
+    assert.equal(turn.onTurn?.id, 'ahmed', 'onTurn ignores attendance');
+    assert.equal(turn.serving?.managerId, 'shehata');
+    assert.equal(turn.serving?.isFallback, true, 'serving a later team is a fallback turn');
+    assert.deepEqual(turn.shiftedTeams, [
+      { managerId: 'ahmed', managerName: 'Ahmed Yossry', headId: 'khaled', headName: 'Khaled Youssef', reason: 'absent' },
+    ]);
+    // computeNextTeam keeps returning the serving team, as before.
+    assert.equal(next(f, [], { workspace })?.managerId, 'shehata');
+  }
+});
+
+test('a team on turn whose members are all with clients is shifted as busy', () => {
+  const f = fixture();
+  setTeamStatus(f, 'ahmed', 'busy');
+  const turn = plan(f);
+  assert.equal(turn.onTurn?.id, 'ahmed');
+  assert.equal(turn.serving?.managerId, 'shehata');
+  assert.deepEqual(turn.shiftedTeams.map((t) => [t.managerId, t.reason]), [['ahmed', 'busy']]);
+});
+
+test('several passed-over teams are listed in cycle order, mixing absent and busy', () => {
+  const f = fixture();
+  setTeamStatus(f, 'ahmed', 'absent');
+  setTeamStatus(f, 'shehata', 'busy');
+  setTeamStatus(f, 'rewaida', 'absent');
+  const turn = plan(f);
+  assert.equal(turn.serving?.managerId, HANY);
+  assert.deepEqual(
+    turn.shiftedTeams.map((t) => [t.managerId, t.reason]),
+    [['ahmed', 'absent'], ['shehata', 'busy'], ['rewaida', 'absent']],
+  );
+});
+
+test('a present on-turn team is not shifted at all', () => {
+  const f = fixture();
+  const turn = plan(f);
+  assert.equal(turn.onTurn?.id, 'ahmed');
+  assert.equal(turn.serving?.managerId, 'ahmed');
+  assert.equal(turn.serving?.isFallback, false);
+  assert.deepEqual(turn.shiftedTeams, []);
+});
+
+test('a carried-over team that is absent stays on turn and is shifted', () => {
+  for (const workspace of WORKSPACES) {
+    const f = fixture();
+    setTeamStatus(f, 'rewaida', 'absent');
+    const turn = plan(f, [], { workspace, carryOver: carry(f, 'rewaida') });
+    assert.equal(turn.onTurn?.id, 'rewaida', 'the carried team is on turn regardless of attendance');
+    assert.equal(turn.serving?.managerId, HANY);
+    assert.deepEqual(turn.shiftedTeams.map((t) => [t.managerId, t.reason]), [['rewaida', 'absent']]);
+  }
+});
+
+test('a present carried-over team is on turn without any shift', () => {
+  const f = fixture();
+  const turn = plan(f, [], { carryOver: carry(f, 'rewaida') });
+  assert.equal(turn.onTurn?.id, 'rewaida');
+  assert.equal(turn.serving?.managerId, 'rewaida');
+  assert.equal(turn.serving?.carriedSalesId, null);
+  assert.deepEqual(turn.shiftedTeams, []);
+});
+
+test('an absent carried team yields once the cycle has already moved past it today', () => {
+  const f = fixture();
+  setTeamStatus(f, 'rewaida', 'absent');
+  // Someone else was served today, so the carried team is no longer on turn.
+  const turn = plan(f, [teamHistory(f, 'ahmed')], { carryOver: carry(f, 'rewaida') });
+  assert.equal(turn.onTurn?.id, 'shehata');
+  assert.equal(turn.serving?.managerId, 'shehata');
+  assert.deepEqual(turn.shiftedTeams, []);
+});
+
+test('the custom cycle drives onTurn and the shift the same way', () => {
+  const f = fixture();
+  const cycle: TeamCycleSettings = { mode: 'custom', order: ['perry', 'ahmed'] };
+  setTeamStatus(f, 'perry', 'absent');
+  const turn = plan(f, [], { cycle });
+  assert.equal(turn.onTurn?.id, 'perry');
+  assert.equal(turn.serving?.managerId, 'ahmed');
+  assert.deepEqual(turn.shiftedTeams.map((t) => t.managerId), ['perry']);
+});
+
+test('the successor («Next») is the literal next team, whether or not it has anybody present', () => {
+  const f = fixture();
+  setTeamStatus(f, 'shehata', 'absent');
+  setTeamStatus(f, 'rewaida', 'absent');
+  // successorTeam ignores attendance: the cycle order is what decides «Next».
+  assert.equal(successorTeam(f.managers, 'ahmed', undefined, f.sales)?.id, 'shehata');
+  assert.equal(successorTeam(f.managers, 'shehata', undefined, f.sales)?.id, 'rewaida');
+  assert.equal(successorTeam(f.managers, GANNAH, undefined, f.sales)?.id, 'ahmed');
+});
+
+// ───────────── Receipt copy («نسخ البيان») ─────────────
+
+const NEXT_TEAM: ManagerTeam = { id: HANY, name: 'Hany Elshenawy', ar: 'هاني الشناوي', headId: 'wael' };
+
+test('a normal receipt keeps the standard Done lines', () => {
+  const a: Assignment = {
+    ...assignment({ managerId: 'rewaida', managerName: 'Rewaida', headId: 'khaled', headName: 'Khaled Youssef' }, 2),
+    salesName: 'Manar',
+    visitType: 'resta',
+  };
+  assert.equal(
+    receiptText(a, NEXT_TEAM),
+    'Walk in (Resta) Done ✅\nSales : Manar Done✅\nManager : Rewaida\nHead : Khaled Youssef\nNext : Hany Elshenawy',
+  );
+});
+
+test('a receipt with passed-over teams uses the exact Shifted ❌ format', () => {
+  const shifted: ShiftedTeam[] = [
+    { managerId: 'ahmed', managerName: 'Ahmed Yossry', headId: 'khaled', headName: 'Khaled Youssef', reason: 'absent' },
+    { managerId: 'shehata', managerName: 'Youssef Shehata', headId: 'wael', headName: 'Wael El Desoky', reason: 'busy' },
+  ];
+  const a: Assignment = {
+    ...assignment({ managerId: 'rewaida', managerName: 'Rewaida', headId: 'khaled', headName: 'Khaled Youssef' }, 3),
+    salesName: 'Manar',
+    visitType: 'site',
+    shiftedTeams: shifted,
+  };
+  assert.equal(
+    receiptText(a, NEXT_TEAM),
+    [
+      'Walk in (Site)',
+      'Ahmed Yossry Shifted ❌',
+      'Youssef Shehata Shifted ❌',
+      'Manar ✅',
+      'Manager : Rewaida',
+      'Head : Khaled Youssef',
+      'Next : Hany Elshenawy',
+    ].join('\n'),
+  );
+  // The spelling is fixed on purpose.
+  assert.ok(receiptText(a, NEXT_TEAM).includes('Shifted ❌'));
+  assert.ok(!receiptText(a, NEXT_TEAM).includes('Shiffted'));
+  assert.ok(!receiptText(a, NEXT_TEAM).includes('Shiftted'));
+});
+
+test('the visit headline names the branch and has no Walk in default for Site/Resta', () => {
+  assert.equal(visitHeadline('site'), 'Walk in (Site)');
+  assert.equal(visitHeadline('resta'), 'Walk in (Resta)');
+});
+
+test('the receipt Next is null-safe when there is no successor', () => {
+  const a: Assignment = { ...assignment({ managerId: 'ahmed', managerName: 'Ahmed Yossry', headId: 'khaled', headName: 'Khaled Youssef' }), salesName: 'Manar', visitType: 'site' };
+  assert.match(receiptText(a, null), /Next : —$/);
+});
+
+// ───────────── Turn order survives storage, reset and the shared chart ─────────────
+
+// Custom order where Perry follows Ahmed (the built-in cycle would give Youssef Shehata).
+const CUSTOM_ORDER: TeamCycleSettings = { mode: 'custom', order: ['ahmed', 'perry', 'shehata'] };
+
+test('a custom turn order survives save/load and a new-day reset', () => {
+  withMemoryLocalStorage(() => {
+    const f = fixture();
+    savePersisted(
+      {
+        salesState: f.state,
+        history: [teamHistory(f, 'ahmed')],
+        counter: 1,
+        seq: 1,
+        startingHead: 'khaled',
+        carryOver: null,
+        lastResetAt: null,
+        customHeads: f.heads,
+        customManagers: f.managers,
+        customSales: f.sales,
+        teamCycle: CUSTOM_ORDER,
+      },
+      'SITE',
+    );
+    assert.deepEqual(loadPersisted('SITE').teamCycle, normalizeTeamCycle(CUSTOM_ORDER));
+
+    // «بدء يوم جديد» — attendance and history are cleared, the order is kept.
+    const before = loadPersisted('SITE');
+    const pending = computeTurnPlan(before.salesState, before.history, f.managers, f.sales, f.heads, {
+      workspace: 'SITE',
+      cycle: before.teamCycle,
+    }).serving;
+    savePersisted(
+      {
+        ...before,
+        salesState: createNewDaySalesState('SITE', f.sales),
+        history: [],
+        counter: 0,
+        seq: 0,
+        carryOver: carryOverForNewDay(null, pending, [], f.heads, 'SITE', undefined, f.managers, before.teamCycle, f.sales),
+        lastResetAt: '2026-10-10T06:00:00.000Z',
+      },
+      'SITE',
+    );
+    const afterReset = loadPersisted('SITE');
+    assert.deepEqual(afterReset.teamCycle, normalizeTeamCycle(CUSTOM_ORDER));
+    // Attendance starts empty again, and the team still on turn is carried over
+    // (Perry: the custom order's successor of Ahmed, where the built-in cycle says Shehata).
+    assert.equal(afterReset.carryOver?.managerId, 'perry');
+    const everyonePresent = Object.fromEntries(
+      Object.entries(afterReset.salesState).map(([id, st]) => [id, { ...st, status: 'available' as const }]),
+    );
+    assert.equal(
+      computeNextTeam(everyonePresent, [], f.managers, f.sales, f.heads, {
+        workspace: 'SITE',
+        cycle: afterReset.teamCycle,
+        carryOver: afterReset.carryOver,
+      })?.managerId,
+      'perry',
+    );
+  });
+});
+
+test('mirrorOrgChart carries the custom turn order to the other branch and never downgrades it', () => {
+  withMemoryLocalStorage(() => {
+    const f = fixture();
+    savePersisted(
+      {
+        salesState: f.state,
+        history: [],
+        counter: 0,
+        seq: 0,
+        startingHead: 'khaled',
+        carryOver: null,
+        lastResetAt: null,
+        customHeads: f.heads,
+        customManagers: f.managers,
+        customSales: f.sales,
+        orgRevision: 1,
+      },
+      'RESTA',
+    );
+    const chart: OrgChart = {
+      heads: f.heads,
+      managers: f.managers,
+      sales: f.sales,
+      removedIds: [],
+      cycle: CUSTOM_ORDER,
+    };
+    mirrorOrgChart('SITE', chart, 5);
+    const mirrored = loadPersisted('RESTA');
+    assert.deepEqual(mirrored.teamCycle, normalizeTeamCycle(CUSTOM_ORDER));
+    assert.equal(mirrored.orgRevision, 5);
+
+    // An older chart must not overwrite a fresher bucket.
+    mirrorOrgChart('SITE', { ...chart, cycle: { mode: 'auto', order: [] } }, 3);
+    assert.deepEqual(loadPersisted('RESTA').teamCycle, normalizeTeamCycle(CUSTOM_ORDER));
+  });
+});
+
+// ───────────── Roster guard: a local unpublished order is not wiped ─────────────
+
+test('a same-revision remote roster is ignored while this device has an unpublished edit', () => {
+  // Strictly newer always wins.
+  assert.equal(canAdoptRemoteOrg(7, 6, true), true);
+  assert.equal(canAdoptRemoteOrg(7, 6, false), true);
+  // Same revision and nothing pending locally → adopt (normal sync).
+  assert.equal(canAdoptRemoteOrg(6, 6, false), true);
+  // Same revision but a local edit is not published yet → keep local (republish).
+  assert.equal(canAdoptRemoteOrg(6, 6, true), false);
+  // An older remote row never wins.
+  assert.equal(canAdoptRemoteOrg(5, 6, false), false);
 });

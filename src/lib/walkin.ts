@@ -61,6 +61,8 @@ export interface Assignment {
   substituted: boolean;
   originalSalesName?: string;
   visitType?: VisitType;
+  /** Teams that were on turn before this one but had nobody free («Shifted ❌»). */
+  shiftedTeams?: ShiftedTeam[];
 }
 
 export interface ComputedTurn {
@@ -585,6 +587,20 @@ export function mirrorOrgChart(account: string, chart: OrgChart, revision: numbe
 //  3. Yesterday's pending person is pinned first (handled by the caller); if absent,
 //     a same-team replacement or an explicit skip follows the existing behavior.
 
+/**
+ * Should a branch row adopt the SHARED roster it carries?
+ *
+ * Adopt when the row is strictly newer than this device's copy, or when both are
+ * the same revision AND this device has no unpublished edit of its own. Anything
+ * else keeps the local roster (and the row is republished instead) — otherwise
+ * an unpublished local edit (e.g. a «turn order» choice) would be wiped by the
+ * same-revision copy and the custom order would silently fall back to «تلقائي».
+ */
+export function canAdoptRemoteOrg(incoming: number, local: number, localDirty: boolean): boolean {
+  if (incoming > local) return true;
+  return incoming === local && !localDirty;
+}
+
 /** Khaled's side ⇄ the other Heads' side (Wael + Mohamed Samir). */
 const sideOf = (headId: string): 'khaled' | 'other' => (headId === 'khaled' ? 'khaled' : 'other');
 
@@ -936,24 +952,54 @@ function teamTurn(
   };
 }
 
+/** Why a team in the cycle was passed over for the turn. */
+export type ShiftReason = 'absent' | 'busy' | 'allAbsent';
+
+/** A team that was on turn (or came before the serving team) but has nobody free. */
+export interface ShiftedTeam {
+  managerId: string;
+  managerName: string;
+  headId: string;
+  headName: string;
+  /**
+   * `absent` — nobody in the team checked in; `busy` — some are with a client
+   * and nobody is free; `allAbsent` — nobody in the whole cycle is available.
+   */
+  reason: ShiftReason;
+}
+
 /**
- * Whose team is on turn now:
- *  1. a team carried from yesterday (not served yet today) keeps the turn;
- *  2. otherwise the fixed cycle continues after the most recently served team;
- *  3. a team with nobody available is skipped — the cycle order never moves.
+ * The turn plan for the day:
+ *  • `onTurn`       — the team the cycle points at, attendance ignored (carry-over included);
+ *  • `serving`      — the first team from `onTurn` (inclusive) with an available member, or null;
+ *  • `shiftedTeams` — the teams between `onTurn` and `serving` that have nobody free.
  */
-export function computeNextTeam(
+export interface TurnPlan {
+  onTurn: ManagerTeam | null;
+  serving: TeamTurn | null;
+  shiftedTeams: ShiftedTeam[];
+}
+
+/**
+ * Whose team is on turn now, and who actually serves it:
+ *  1. a team carried from yesterday (not served yet today) is on turn;
+ *  2. otherwise the fixed cycle continues after the most recently served team;
+ *  3. a team with nobody available is passed over — `shiftedTeams` lists it —
+ *     and the cycle order itself never moves.
+ */
+export function computeTurnPlan(
   salesState: Record<string, SalesState>,
   history: Assignment[],
   managersList: ManagerTeam[] = MANAGERS,
   salesList: SalesPerson[] = SALES,
   headsList: HeadGroup[] = HEADS,
   options: RotationOptions = {},
-): TeamTurn | null {
+): TurnPlan {
+  const empty: TurnPlan = { onTurn: null, serving: null, shiftedTeams: [] };
   const cycleSettings = normalizeTeamCycle(options.cycle);
   const isCustom = cycleSettings.mode === 'custom';
   const cycle = resolveCycle(managersList, cycleSettings, salesList);
-  if (cycle.every((team) => !team)) return null;
+  if (cycle.every((team) => !team)) return empty;
   const indexInCycle = (managerId: string, managerName: string): number =>
     cycleIndexOf(cycle, managerId, managerName, isCustom);
   const excluded = options.skippedIds ?? [];
@@ -968,17 +1014,6 @@ export function computeNextTeam(
   const carriedTeam = carriedIndex >= 0 ? cycle[carriedIndex] : null;
   const servedToday = (managerId: string) => history.some((a) => a.managerId === managerId);
 
-  if (carriedTeam && !servedToday(carriedTeam.id) && hasMembers(carriedTeam)) {
-    const person = carried?.salesId
-      ? salesList.find((s) => s.id === carried.salesId) ?? null
-      : null;
-    const present =
-      person && person.managerId === carriedTeam.id && salesState[person.id]?.status === 'available'
-        ? person
-        : null;
-    return teamTurn(carriedTeam, `دور أمس المرحّل • تيم ${carriedTeam.name}`, false, present, headsList);
-  }
-
   let previousIndex = -1;
   for (let i = history.length - 1; i >= 0; i--) {
     const index = indexInCycle(history[i].managerId, history[i].managerName);
@@ -987,17 +1022,69 @@ export function computeNextTeam(
       break;
     }
   }
-  const start = previousIndex >= 0 ? (previousIndex + 1) % cycle.length : carriedIndex >= 0 ? carriedIndex : 0;
 
+  // The carried team holds the turn while nothing has been served yet today, or
+  // while it can actually be served. An absent carried team that the cycle has
+  // already moved past (someone was served after it) yields to the cycle.
+  const carryPending = Boolean(carriedTeam) && !servedToday(carriedTeam!.id);
+  const carryOnTurn = carryPending && (previousIndex < 0 || hasMembers(carriedTeam!));
+  const start =
+    previousIndex >= 0 ? (previousIndex + 1) % cycle.length : carriedIndex >= 0 ? carriedIndex : 0;
+  const onTurnIndex = carryOnTurn ? carriedIndex : start;
+  const onTurn = cycle[onTurnIndex] ?? null;
+
+  const shiftedTeams: ShiftedTeam[] = [];
+  let serving: TeamTurn | null = null;
   for (let offset = 0; offset < cycle.length; offset++) {
-    const team = cycle[(start + offset) % cycle.length];
+    const team = cycle[(onTurnIndex + offset) % cycle.length];
     if (!team) continue;
-    if (!hasMembers(team)) continue;
-    const reason =
-      offset === 0 ? `دور تيم ${team.name}` : `تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
-    return teamTurn(team, reason, offset > 0, null, headsList);
+    if (!hasMembers(team)) {
+      const head = headsList.find((h) => h.id === team.headId);
+      const members = salesList.filter((s) => s.managerId === team.id);
+      const busy = members.some((s) => salesState[s.id]?.status === 'busy');
+      shiftedTeams.push({
+        managerId: team.id,
+        managerName: team.name,
+        headId: team.headId,
+        headName: head?.name ?? team.headId,
+        reason: busy ? 'busy' : 'absent',
+      });
+      continue;
+    }
+    if (carryOnTurn && team.id === carriedTeam?.id) {
+      const person = carried?.salesId ? salesList.find((s) => s.id === carried.salesId) ?? null : null;
+      const present =
+        person && person.managerId === team.id && salesState[person.id]?.status === 'available'
+          ? person
+          : null;
+      serving = teamTurn(team, `دور أمس المرحّل • تيم ${team.name}`, false, present, headsList);
+    } else {
+      const reason =
+        offset === 0 ? `دور تيم ${team.name}` : `تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
+      serving = teamTurn(team, reason, offset > 0, null, headsList);
+    }
+    break;
   }
-  return null;
+
+  // Nobody free anywhere: every team of the cycle is passed over.
+  if (!serving) shiftedTeams.forEach((team) => (team.reason = 'allAbsent'));
+  return { onTurn, serving, shiftedTeams };
+}
+
+/**
+ * The team that serves the turn (`TurnPlan.serving`). Kept for callers that only
+ * need the serving team; the team on turn and the passed-over teams come from
+ * `computeTurnPlan`.
+ */
+export function computeNextTeam(
+  salesState: Record<string, SalesState>,
+  history: Assignment[],
+  managersList: ManagerTeam[] = MANAGERS,
+  salesList: SalesPerson[] = SALES,
+  headsList: HeadGroup[] = HEADS,
+  options: RotationOptions = {},
+): TeamTurn | null {
+  return computeTurnPlan(salesState, history, managersList, salesList, headsList, options).serving;
 }
 
 /**
@@ -1336,6 +1423,49 @@ export function carryOverForNewDay(
 }
 
 // ───────────────────────── Formatting ─────────────────────────
+
+/** «Walk in (Site)» / «Walk in (Resta)» — the branch the visit happened at. */
+export function visitHeadline(visit: VisitType | undefined): string {
+  if (visit === 'site') return 'Walk in (Site)';
+  if (visit === 'resta') return 'Walk in (Resta)';
+  return 'Walk in';
+}
+
+/**
+ * The copyable receipt («نسخ البيان»).
+ *
+ * Normal visit:
+ *   Walk in (Site) Done ✅ / Sales : X Done✅ / Manager : … / Head : … / Next : …
+ *
+ * Visit with teams passed over (`shiftedTeams`), exactly:
+ *   Walk in (Site) / <team> Shifted ❌ (one line per team) / <sales> ✅ /
+ *   Manager : … / Head : … / Next : …
+ *
+ * `Next` is always the successor team in the cycle (`successorTeam`), whether or
+ * not that team has anybody present today.
+ */
+export function receiptText(assignment: Assignment, next: ManagerTeam | null): string {
+  const headline = visitHeadline(assignment.visitType);
+  const nextName = next ? next.name : '—';
+  const shifted = assignment.shiftedTeams ?? [];
+  if (shifted.length > 0) {
+    return (
+      `${headline}\n` +
+      shifted.map((t) => `${t.managerName} Shifted ❌`).join('\n') +
+      `\n${assignment.salesName} ✅\n` +
+      `Manager : ${assignment.managerName}\n` +
+      `Head : ${assignment.headName}\n` +
+      `Next : ${nextName}`
+    );
+  }
+  return (
+    `${headline} Done ✅\n` +
+    `Sales : ${assignment.salesName} Done✅\n` +
+    `Manager : ${assignment.managerName}\n` +
+    `Head : ${assignment.headName}\n` +
+    `Next : ${nextName}`
+  );
+}
 
 export const formatTime = (iso: string): string => {
   try {
