@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
-import { UserCheck, UserX, Users, Crown, Clock, CircleAlert } from 'lucide-react';
+import { UserCheck, Users, Crown, Clock, CircleAlert } from 'lucide-react';
 import type { TeamTurn, VisitType } from '../lib/walkin';
-import { isPickableForClient, selectionAfterStatusChange } from '../lib/walkin';
 import { cn } from '../utils/cn';
 
 const VISIT_OPTIONS: { id: VisitType; label: string }[] = [
@@ -31,13 +30,6 @@ export interface UpcomingTeam {
   available: number;
 }
 
-/** The status mark printed on EVERY member card — the source of the statement. */
-const STATUS_BADGE: Record<TeamMemberOption['status'], { label: string; className: string }> = {
-  available: { label: 'متاح', className: 'badge badge-green' },
-  busy: { label: 'مشغول', className: 'badge badge-amber' },
-  absent: { label: 'لم يحضر', className: 'badge badge-gray' },
-};
-
 interface Props {
   team: TeamTurn | null;
   members: TeamMemberOption[];
@@ -48,24 +40,6 @@ interface Props {
   setVisitType: (v: VisitType) => void;
   /** Confirms the MANUALLY chosen sales. */
   onConfirm: (salesId: string) => void;
-  /**
-   * Team members written «Shiffted ❌» — decided AUTOMATICALLY from the status
-   * mark: everyone busy (مشغول) or absent (لم يحضر) on the team that is on turn.
-   * Each one prints a `Sales : … Shiffted ❌` line in the statement.
-   */
-  shiftedIds: string[];
-  /**
-   * Tapping a busy/absent member takes him OUT of the statement (tapping again
-   * puts him back) — the only manual control left over the automatic lines.
-   */
-  onToggleShifted: (id: string) => void;
-  /**
-   * «علّمه مشغول / خلّيه متاح» — the manager marks availability BY HAND under
-   * every present member (`busy = true` marks him busy, `false` returns him to
-   * available). A busy member cannot be chosen, and marking the chosen one busy
-   * cancels the choice.
-   */
-  onSetBusy: (id: string, busy: boolean) => void;
   totalToday: number;
 }
 
@@ -78,9 +52,6 @@ export function CurrentTurn({
   visitType,
   setVisitType,
   onConfirm,
-  shiftedIds,
-  onToggleShifted,
-  onSetBusy,
   totalToday,
 }: Props) {
   const [chosen, setChosen] = useState('');
@@ -89,15 +60,6 @@ export function CurrentTurn({
   useEffect(() => {
     setChosen('');
   }, [team?.managerId, totalToday]);
-
-  // The choice only survives while the chosen member is still pickable: marking
-  // him busy here — or on the attendance board while this modal is open —
-  // cancels the selection, so a busy sales can never be confirmed.
-  useEffect(() => {
-    setChosen((cur) =>
-      cur ? selectionAfterStatusChange(cur, members.find((m) => m.id === cur)?.status) : cur,
-    );
-  }, [members]);
 
   if (!team) {
     return (
@@ -133,12 +95,6 @@ export function CurrentTurn({
             <Users className="size-3" />
             {available} متاح للاختيار
           </span>
-          {shiftedIds.length > 0 && (
-            <span className="badge badge-red">
-              <UserX className="size-3" />
-              {shiftedIds.length} Shiffted ❌ تلقائياً
-            </span>
-          )}
           {team.isFallback && <span className="badge badge-amber">تخطي فرق غير متاحة</span>}
         </div>
         <p className="mx-auto mt-3 max-w-sm text-[12px] leading-relaxed text-ink-400">{team.reason}</p>
@@ -185,100 +141,39 @@ export function CurrentTurn({
       <div className="mt-5">
         <p className="field-label">اختر السيلز من تيم {team.managerName}</p>
         <p className="mb-2 text-[11px] font-medium text-ink-400">
-          على كل سيلز علامة حالته:{' '}
-          <span className="font-extrabold text-emerald-600">متاح</span> أو{' '}
-          <span className="font-extrabold text-amber-600">مشغول</span> أو{' '}
-          <span className="font-extrabold text-ink-500">لم يحضر</span> — والاختيار من المتاحين فقط.
-          <br />
-          تحت كل سيلز <span className="font-extrabold">حاضر</span> زرار{' '}
-          <span className="font-extrabold text-amber-600">علّمه مشغول</span> /{' '}
-          <span className="font-extrabold text-emerald-600">خلّيه متاح</span> — إنت اللي تحدد،
-          حتى لو السبب بره الشغل.
-          <br />
-          أي سيلز <span className="font-extrabold">مشغول</span> أو{' '}
-          <span className="font-extrabold">لم يحضر</span> هيتكتب{' '}
-          <span className="font-extrabold text-red-500">Shiffted ❌</span> في البيان{' '}
-          <span className="font-extrabold">تلقائياً</span> — اضغط عليه لو عايز تستثنيه منه.
+          الاختيار يدوي بالكامل — الترتيب المقترح حسب عدد أدوار كل سيلز وأولوية الحضور.
         </p>
         <div className="grid grid-cols-2 gap-2">
           {members.map((m) => {
-            const pickable = isPickableForClient(m.status);
-            const skipped = m.status === 'busy' || m.status === 'absent';
-            // The «Shiffted ❌» line is AUTOMATIC for every busy/absent member —
-            // tapping the card is only how the manager keeps one of them OUT.
-            const marked = skipped && shiftedIds.includes(m.id);
-            const excluded = skipped && !marked;
-            const badge = STATUS_BADGE[m.status];
-            const activate = () => (pickable ? setChosen(m.id) : skipped ? onToggleShifted(m.id) : undefined);
+            const selectable = m.status === 'available';
             return (
-              <div
+              <button
                 key={m.id}
-                role="button"
-                tabIndex={0}
-                onClick={activate}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter' && e.key !== ' ') return;
-                  e.preventDefault();
-                  activate();
-                }}
-                aria-pressed={pickable ? chosen === m.id : marked}
+                type="button"
+                disabled={!selectable}
+                onClick={() => setChosen(m.id)}
                 className={cn(
-                  'cursor-pointer rounded-xl border-2 bg-white px-3 py-2.5 text-right transition',
+                  'rounded-xl border-2 bg-white px-3 py-2.5 text-right transition',
                   chosen === m.id
                     ? 'border-brand-600 bg-brand-50'
-                    : marked
-                      ? 'border-red-300 bg-red-50/70'
-                      : pickable
-                        ? 'border-ink-100 hover:border-brand-200'
-                        : 'border-dashed border-ink-100 opacity-60 hover:border-amber-300 hover:opacity-100',
+                    : selectable
+                      ? 'border-ink-100 hover:border-brand-200'
+                      : 'border-ink-100 opacity-55',
                 )}
               >
-                <span className="flex flex-wrap items-center gap-1.5">
+                <span className="flex items-center gap-1.5">
                   <span className="truncate text-[13.5px] font-extrabold text-ink-900">{m.name}</span>
-                  <span className={cn('shrink-0', badge.className)}>{badge.label}</span>
                   {m.isManager && <span className="badge badge-red shrink-0">مدير</span>}
                   {m.carried && <span className="badge badge-amber shrink-0">دور أمس</span>}
-                  {marked && <span className="shrink-0 text-[10.5px] font-extrabold text-red-500">Shiffted ❌</span>}
                 </span>
                 <span className="tnum mt-0.5 block text-[10px] font-semibold text-ink-400">
-                  {marked
-                    ? 'هيتكتب في البيان Shiffted ❌ — اضغط للاستثناء'
-                    : excluded
-                      ? `${badge.label} — مستثنى من البيان، اضغط لإرجاعه`
+                  {m.status === 'busy'
+                    ? 'مشغول الآن مع عميل'
+                    : m.status === 'absent'
+                      ? 'لم يحضر'
                       : `${m.walkCount} دور${m.checkInOrder ? ` • حضور #${m.checkInOrder}` : ''}`}
                 </span>
-                {/*
-                  «علّمه مشغول / خلّيه متاح» — تحت كل سيلز حاضر في تيم الدور.
-                  التعليم باليد يخليه غير قابل للاختيار، ولو كان هو المختار
-                  الاختيار يتلغي (`selectionAfterStatusChange`)، وهيتكتب
-                  «Shiffted ❌» لو دوره كان قبل اللي هياخد العميل.
-                */}
-                {m.status !== 'absent' && (
-                  <span className="mt-1.5 flex">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSetBusy(m.id, m.status === 'available');
-                      }}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      aria-label={
-                        m.status === 'busy'
-                          ? `إرجاع ${m.name} متاح`
-                          : `تعليم ${m.name} مشغول`
-                      }
-                      className={cn(
-                        'shrink-0 rounded-lg border px-2 py-1 text-[10.5px] font-extrabold transition active:scale-95',
-                        m.status === 'busy'
-                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                          : 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100',
-                      )}
-                    >
-                      {m.status === 'busy' ? 'خلّيه متاح' : 'علّمه مشغول'}
-                    </button>
-                  </span>
-                )}
-              </div>
+              </button>
             );
           })}
         </div>

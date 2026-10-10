@@ -1,21 +1,13 @@
 import { useState } from 'react';
-import { CheckCircle2, Copy, Check, ArrowLeft, User, UserX, Users, Crown } from 'lucide-react';
+import { CheckCircle2, Copy, Check, ArrowLeft, User, Users, Crown } from 'lucide-react';
 import { formatTime } from '../lib/walkin';
-import type { Assignment, ShiftedSalesInfo, VisitType } from '../lib/walkin';
+import type { Assignment, TeamTurn, VisitType } from '../lib/walkin';
 import { Modal } from './ui';
 
 interface Props {
   assignment: Assignment;
-  /**
-   * The LITERAL next team in the cycle — even when nobody from it attended.
-   * No sales name is proposed (the sales is picked manually when the turn comes).
-   */
-  next: { managerName: string } | null;
-  /**
-   * On-turn members skipped AUTOMATICALLY because their status mark was busy or
-   * absent — one «Shiffted ❌» line each (see `shiftedSalesFor`).
-   */
-  shifted?: ShiftedSalesInfo[];
+  /** Next TEAM on turn — no sales name is proposed (the sales is picked manually). */
+  next: TeamTurn | null;
   onClose: () => void;
 }
 
@@ -26,37 +18,20 @@ function visitHeadline(visit: VisitType): string {
   return 'Walk in';
 }
 
-/**
- * The statement that gets copied — ONE source for both the clipboard and the
- * tests. Order: the branch line, the AUTOMATIC «Shiffted ❌» lines (every
- * busy / لم يحضر member of the team on turn), the sales who served, Manager,
- * Head, then «Next» — the literal next team in the cycle.
- */
-export function statementText(
-  assignment: Assignment,
-  next: { managerName: string } | null,
-  shifted: ShiftedSalesInfo[] = [],
-): string {
-  const lines = [`${visitHeadline(assignment.visitType ?? 'walkin')} Done ✅`];
-  shifted.forEach((s) => lines.push(`Sales : ${s.name} Shiffted ❌`));
-  lines.push(`Sales : ${assignment.salesName} Done✅`);
-  lines.push(`Manager : ${assignment.managerName}`);
-  lines.push(`Head : ${assignment.headName}`);
-  lines.push(`Next : ${next ? `تيم ${next.managerName}` : '—'}`);
-  return lines.join('\n');
-}
-
-export function DoneReceipt({ assignment, next, shifted = [], onClose }: Props) {
+export function DoneReceipt({ assignment, next, onClose }: Props) {
   const [copied, setCopied] = useState(false);
 
   const visit = assignment.visitType ?? 'walkin';
   const title = `${visitHeadline(visit)} Done ✅`;
 
-  // البيان المطلوب: الفرع، ثم سطر «Sales : … Shiffted ❌» لكل سيلز مشغول / لم
-  // يحضر من تيم الدور (تلقائي من علامة الحالة)، ثم السيلز اللي أخد العميل
-  // (Done ✅)، المدير، الهيد، ثم «Next» — اللي عليه الدور في الدورة عامة حتى لو
-  // لم يحضر.
-  const text = statementText(assignment, next, shifted);
+  // البيان المطلوب: الفرع، السيلز اللي تم اختياره (Done ✅)، المدير، الهيد،
+  // ثم المدير اللي عليه الدور — بدون ذكر أي اسم سيلز في «Next».
+  const text =
+    `${title}\n` +
+    `Sales : ${assignment.salesName} Done✅\n` +
+    `Manager : ${assignment.managerName}\n` +
+    `Head : ${assignment.headName}\n` +
+    `Next : ${next ? next.managerName : '—'}`;
 
   const copy = async () => {
     try {
@@ -104,25 +79,8 @@ export function DoneReceipt({ assignment, next, shifted = [], onClose }: Props) 
           </div>
         </div>
 
-        {/* shifted — on-turn members who were skipped (busy / absent) */}
-        {shifted.length > 0 && (
-          <div className="mt-4 space-y-2.5 rounded-2xl border border-red-100 bg-red-50/60 p-4 text-left">
-            {shifted.map((s) => (
-              <Row key={s.id} icon={<UserX className="size-4" />} label="Sales :">
-                <span className="flex flex-wrap items-center gap-1.5">
-                  <span>{s.name}</span>
-                  <span className="text-red-500">Shiffted ❌</span>
-                </span>
-              </Row>
-            ))}
-            <p dir="rtl" className="pl-[106px] text-[10.5px] font-semibold text-ink-400">
-              كانوا على الدور واتخطوا تلقائياً (مشغول / لم يحضر)
-            </p>
-          </div>
-        )}
-
         {/* current */}
-        <div className="mt-3 space-y-2.5 rounded-2xl border border-ink-100 bg-ink-50/70 p-4 text-left">
+        <div className="mt-4 space-y-2.5 rounded-2xl border border-ink-100 bg-ink-50/70 p-4 text-left">
           <Row icon={<User className="size-4" />} label="Sales :">
             <span className="flex flex-wrap items-center gap-1.5">
               <span>{assignment.salesName}</span>
@@ -143,7 +101,7 @@ export function DoneReceipt({ assignment, next, shifted = [], onClose }: Props) 
             {next ? <span className="text-brand-700">تيم {next.managerName}</span> : <span className="text-ink-400">—</span>}
           </Row>
           <p dir="rtl" className="pl-[106px] text-[10.5px] font-semibold text-ink-400">
-            اللي عليه الدور في الدورة عامة — حتى لو لم يحضر أحد منه، ويتم اختيار السيلز يدوياً عند الدور
+            الدور على التيم — يتم اختيار السيلز يدوياً عند الدور
           </p>
         </div>
 

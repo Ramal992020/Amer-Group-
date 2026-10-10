@@ -35,8 +35,6 @@ import {
   swapInCustomOrder,
   teamOrderFrom,
   teamRoundFrom,
-  shiftedSalesFor,
-  shiftedBeforeServer,
   availableTeamMembers,
   usesFixedTeamRotation,
   carryOverForNewDay,
@@ -53,9 +51,7 @@ import {
   normalizeTeamCycle,
   otherWorkspace,
   setActiveAccount,
-  successorTeam,
   formatTime,
-  withBusyMark,
 } from './lib/walkin';
 import {
   applyOrgChart,
@@ -74,7 +70,6 @@ import type {
   SalesPerson,
   SalesState,
   PersistedWalkin,
-  ShiftedSalesInfo,
   TeamCycleSettings,
   TeamTurn,
   UndoEntry,
@@ -129,12 +124,8 @@ import { cn } from './utils/cn';
 
 interface DoneInfo {
   assignment: Assignment;
-  /**
-   * The LITERAL next team in the cycle — even when nobody from it attended.
-   * The engine's own rotation still skips empty teams; the written statement
-   * names the pure-cycle successor.
-   */
-  next: { managerName: string } | null;
+  /** Next team on turn — the sales is picked manually when that turn comes. */
+  next: TeamTurn | null;
 }
 
 type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
@@ -308,13 +299,6 @@ function WalkInApp({
   const [lastResetAt, setLastResetAt] = useState<string | null>(boot.lastResetAt);
   const [clientLabel, setClientLabel] = useState('');
   const [visitType, setVisitType] = useState<VisitType>('walkin');
-  /**
-   * الاستثناء اليدوي الوحيد من سطور البيان: سيلز مشغول/لم يحضر وضغط المدير
-   * عليه في شاشة الإسناد عشان ما يتكتبش «Shiffted ❌». التعليم نفسه تلقائي من
-   * علامة «مشغول / متاح» على الكارت — والعلامة دي قرار المدير باليد
-   * (`setSalesBusy`)، حتى لو السيلز مشغول في حاجة بره الشغل.
-   */
-  const [unshiftedIds, setUnshiftedIds] = useState<string[]>([]);
   const [paused, setPaused] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneInfo | null>(null);
   const [tab, setTab] = useState<Tab>('dashboard');
@@ -1083,31 +1067,6 @@ function WalkInApp({
 
   const availableForTurn = teamRoster.filter((m) => m.status === 'available').length;
 
-  // «Shiffted ❌» — تلقائي بالكامل من علامة الحالة على الكارت: كل عضو في تيم
-  // الدور حالته «مشغول» أو «لم يحضر» بيتكتب في البيان، بنفس ترتيب الشاشة
-  // (دور أمس أولاً ثم أولوية الحضور). المتاح — ومنه اللي هياخد العميل — لا
-  // يظهر هنا أبداً، والاستثناء الوحيد هو اللي المدير ضغط عليه (`unshiftedIds`).
-  const shiftedMembers: ShiftedSalesInfo[] = useMemo(
-    () =>
-      nextTeam
-        ? shiftedSalesFor(nextTeam.managerId, salesState, sales, nextTeam.carriedSalesId, unshiftedIds)
-        : [],
-    [nextTeam, salesState, sales, unshiftedIds],
-  );
-  /** المعرّفات المعلَّمة — للعلامة الحمراء على شاشة الاختيار. */
-  const shiftedIds = useMemo(() => shiftedMembers.map((m) => m.id), [shiftedMembers]);
-
-  // الاستثناء اليدوي يبدأ نظيفاً مع كل عميل جديد ومع كل تيم جديد على الدور —
-  // نفس لحظة تصفير الاختيار اليدوي في CurrentTurn.
-  useEffect(() => {
-    if (assignOpen) setUnshiftedIds([]);
-  }, [assignOpen, nextTeam?.managerId]);
-
-  /** ضغط المدير على سيلز مشغول/لم يحضر: يستثنيه من سطور البيان — ويضغط تاني يرجّعه. */
-  const toggleShifted = (id: string) => {
-    setUnshiftedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  };
-
 
   const totalToday = history.length;
   const presentCount = sales.filter((s) => salesState[s.id]?.status !== 'absent').length;
@@ -1248,35 +1207,8 @@ function WalkInApp({
     }
   };
 
-  /**
-   * «علّمه مشغول» — المدير هو اللي يقرر إذا كان السيلز مشغول ولا متاح، حتى لو
-   * السبب بره الشغل. `withBusyMark` ما يلمسش «لم يحضر» ولا حاجة غير الحالة.
-   */
-  const markBusy = (id: string) => {
-    setSalesState((prev) => withBusyMark(prev, id, true));
-  };
-
-  /**
-   * «متاح» / «خلّيه متاح» — إرجاع السيلز متاح يدوياً: سواء كان اتعلّم مشغول
-   * باليد أو أخد عميل واتعلّم مشغول تلقائياً (`confirmWith`). مفيش رجوع
-   * تلقائي للمتاح بعد كده.
-   */
   const freeSales = (id: string) => {
-    setSalesState((prev) => withBusyMark(prev, id, false));
-  };
-
-  /**
-   * نفس الزرار في شاشة الحضور وشاشة اختيار السيلز: «علّمه مشغول / خلّيه متاح».
-   * التعليم باليد يمسح أي استثناء سابق من سطور «Shiffted ❌» — اللي يتعلّم
-   * مشغول يتكتب في البيان بنفس القاعدة (`shiftedSalesFor` + `shiftedBeforeServer`).
-   */
-  const setSalesBusy = (id: string, busy: boolean) => {
-    if (busy) {
-      markBusy(id);
-      setUnshiftedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev));
-      return;
-    }
-    freeSales(id);
+    setSalesState((prev) => ({ ...prev, [id]: { ...prev[id], status: 'available' } }));
   };
 
   // ── Assignment ──
@@ -1291,13 +1223,6 @@ function WalkInApp({
     const mgr = managers.find((m) => m.id === s.managerId) || { id: s.managerId, name: s.managerId };
     const head = heads.find((h) => h.id === s.headId) || { id: s.headId, name: s.headId };
     const n = seq + 1;
-    // «Shiffted ❌» — المشغول / اللي لم يحضر من تيم الدور، محسوب تلقائياً من
-    // علامة الحالة على شاشة الاختيار (`shiftedMembers`) ويُحفَظ على الإسناد نفسه
-    // عشان البيان يطلع بيهم في أي وقت — حتى بعد ما حالتهم تتغير على الشاشة.
-    const shiftedSales: ShiftedSalesInfo[] =
-      nextTeam && nextTeam.managerId === mgr.id
-        ? shiftedBeforeServer(mgr.id, s.id, shiftedMembers, salesState, sales, nextTeam.carriedSalesId)
-        : [];
     const assignment: Assignment = {
       id: `${Date.now()}-${n}`,
       n,
@@ -1311,7 +1236,6 @@ function WalkInApp({
       clientLabel: clientLabel.trim(),
       substituted: false,
       visitType,
-      ...(shiftedSales.length > 0 ? { shiftedSales } : {}),
     };
 
     // Compact undo record: restores the person's state, the manual team order
@@ -1345,23 +1269,20 @@ function WalkInApp({
     };
     // دور أمس المرحَّل يُستهلك بمجرد خدمة التيم الخاص به.
     const carryAfter = carryOver && carryOver.managerId === mgr.id ? null : carryOver;
-    // «Next» في البيان = اللي عليه الدور في الدورة عامة — التيم اللي يلي التيم
-    // الحالي حرفياً في الدورة، حتى لو لم يحضر أحد منه (محرك الدور نفسه يظل
-    // يتخطى الفرق الفاضية، الفرق بين اللي على الشاشة واللي مكتوب في البيان).
-    const nextAfter = successorTeam(managers, mgr.id, cycleSettings, sales);
+    const nextAfter = computeNextTeam(newSalesState, newHistory, managers, sales, heads, {
+      workspace: account,
+      carryOver: carryAfter,
+      cycle: cycleSettings,
+    });
     setSeq(n);
     setHistory(newHistory);
     setSalesState(newSalesState);
     setCarryOver(carryAfter);
     setClientLabel('');
     setVisitType('walkin');
-    setUnshiftedIds([]);
     setManualOrder((prev) => (prev.length > 0 ? prev.filter((id) => id !== mgr.id) : prev));
     setAssignOpen(false);
-    setDoneInfo({
-      assignment,
-      next: nextAfter ? { managerName: nextAfter.name } : null,
-    });
+    setDoneInfo({ assignment, next: nextAfter });
   };
 
   const undoLast = () => {
@@ -1739,7 +1660,7 @@ function WalkInApp({
                     <StatCard
                       label="مشغول"
                       value={busyList.length}
-                      hint="غير متاح لاستقبال عميل"
+                      hint="في مقابلة حالياً"
                       accent="amber"
                       icon={<PhoneCall className="size-5" strokeWidth={2.2} />}
                       progress={sales.length ? (busyList.length / sales.length) * 100 : 0}
@@ -1800,7 +1721,7 @@ function WalkInApp({
                   <section className="surface anim-fade-up p-4">
                     <SectionTitle
                       title="مشغول الآن"
-                      subtitle={`${busyList.length} غير متاح لاستقبال عميل`}
+                      subtitle={`${busyList.length} في مقابلة`}
                       icon={<PhoneCall className="size-4.5" strokeWidth={2.1} />}
                     />
                     <div className="space-y-2">
@@ -1811,13 +1732,10 @@ function WalkInApp({
                         >
                           <div className="min-w-0">
                             <p className="truncate text-[14px] font-extrabold text-ink-900">{s.name}</p>
-                            <p className="text-[11.5px] font-semibold text-amber-700">مشغول</p>
+                            <p className="text-[11.5px] font-semibold text-amber-700">مشغول مع عميل</p>
                           </div>
-                          <button
-                            onClick={() => freeSales(s.id)}
-                            className="btn btn-neutral shrink-0 px-3 py-2 text-[12px]"
-                          >
-                            متاح
+                          <button onClick={() => freeSales(s.id)} className="btn btn-neutral shrink-0 px-3 py-2 text-[12px]">
+                            إنهاء
                           </button>
                         </div>
                       ))}
@@ -1836,7 +1754,6 @@ function WalkInApp({
                     salesState={salesState}
                     onToggle={toggleAttendance}
                     onFree={freeSales}
-                    onBusy={markBusy}
                     heads={heads}
                     managers={managers}
                     sales={sales}
@@ -2185,21 +2102,13 @@ function WalkInApp({
             visitType={visitType}
             setVisitType={setVisitType}
             onConfirm={(salesId) => confirmWith(salesId)}
-            shiftedIds={shiftedIds}
-            onToggleShifted={toggleShifted}
-            onSetBusy={setSalesBusy}
             totalToday={totalToday}
           />
         )}
       </Modal>
 
       {doneInfo && (
-        <DoneReceipt
-          assignment={doneInfo.assignment}
-          next={doneInfo.next}
-          shifted={doneInfo.assignment.shiftedSales}
-          onClose={() => setDoneInfo(null)}
-        />
+        <DoneReceipt assignment={doneInfo.assignment} next={doneInfo.next} onClose={() => setDoneInfo(null)} />
       )}
     </div>
   );

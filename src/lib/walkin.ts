@@ -47,22 +47,6 @@ export const VISIT_LABELS: Record<VisitType, string> = {
   resta: 'Walk in Resta',
 };
 
-/** Why a skipped sales is written as «Shiffted ❌» in the statement. */
-export type ShiftedReason = 'busy' | 'absent';
-
-/**
- * A team member who was on turn but got skipped — marked busy (by hand or
- * because he is sitting with another client) or not present. Written
- * AUTOMATICALLY (one `Sales : … Shiffted ❌` line each in the receipt,
- * `DoneReceipt`) from the busy/available mark on the assign screen;
- * see `shiftedSalesFor()`.
- */
-export interface ShiftedSalesInfo {
-  id: string;
-  name: string;
-  status: ShiftedReason;
-}
-
 export interface Assignment {
   id: string;
   n: number;
@@ -77,8 +61,6 @@ export interface Assignment {
   substituted: boolean;
   originalSalesName?: string;
   visitType?: VisitType;
-  /** Skipped on-turn members (busy/absent) — printed as «Shiffted ❌» lines. */
-  shiftedSales?: ShiftedSalesInfo[];
 }
 
 export interface ComputedTurn {
@@ -210,53 +192,6 @@ export function reconcileCounts(
     out[id] = { ...st, walkCount: own.get(id) ?? 0, coverCount: covers.get(id) ?? 0 };
   });
   return out;
-}
-
-/**
- * The manual «مشغول / متاح» mark — the MANAGER decides availability, not the
- * engine: a sales can be busy with something outside the branch («مشغول في
- * حاجة بره الشغل»), so `busy` is not reserved for «sitting with a client».
- *
- *  - `busy = true`  → «علّمه مشغول» (attendance board + assign screen);
- *  - `busy = false` → «متاح» / «خلّيه متاح», the manual return to available. It
- *    is the same action the «إنهاء» button used to be, and it is how the sales
- *    who took a client (marked busy automatically by `confirmWith`) comes back.
- *
- * Only a PRESENT member can be marked busy — an absent one stays «لم يحضر», and
- * an id with no attendance record at all is left alone (never created). Nothing
- * but `status` changes: `checkInOrder` / `checkInTime` / `walkCount` are kept,
- * so the fairness order and the «Shiffted ❌» chain stay exactly where they were.
- */
-export function withBusyMark(
-  salesState: Record<string, SalesState>,
-  id: string,
-  busy: boolean,
-): Record<string, SalesState> {
-  const cur = salesState[id];
-  if (!cur || cur.status === 'absent') return salesState;
-  const status: SalesStatus = busy ? 'busy' : 'available';
-  if (cur.status === status) return salesState;
-  return { ...salesState, [id]: { ...cur, status } };
-}
-
-/**
- * Can this member be chosen for the client? Only someone PRESENT and
- * AVAILABLE — a member marked busy BY HAND is exactly as unpickable as one who
- * is busy with another client, and the «لم يحضر» one cannot be picked either.
- */
-export function isPickableForClient(status?: SalesStatus): boolean {
-  return status === 'available';
-}
-
-/**
- * A manual selection survives a status change only while the chosen member is
- * still pickable: marking the chosen sales busy — from the assign screen or
- * from the attendance board while the modal is open — CANCELS the choice, so
- * the «تأكيد وبدء المقابلة» button can never be confirmed on a busy sales.
- */
-export function selectionAfterStatusChange(chosenId: string, status?: SalesStatus): string {
-  if (!chosenId) return '';
-  return isPickableForClient(status) ? chosenId : '';
 }
 
 /**
@@ -975,84 +910,6 @@ export function availableTeamMembers(
         !excludeIds.includes(s.id),
     )
     .sort((a, b) => sortByAttendance(a, b, salesState));
-}
-
-/**
- * The team's FULL turn order — including members who are busy or absent —
- * the order the receipt reads the skipped «Shiffted ❌» names from.
- *
- * Yesterday's carried person is pinned first, then the same fairness order the
- * manual picker uses (fewest own turns, then earliest check-in). It is exactly
- * `availableTeamMembers()` without dropping the non-available members, so the
- * statement and the screen can never disagree about who was on turn before whom.
- */
-export function teamTurnOrder(
-  managerId: string,
-  salesState: Record<string, SalesState>,
-  salesList: SalesPerson[] = SALES,
-  carriedSalesId?: string | null,
-): SalesPerson[] {
-  const members = salesList.filter((s) => s.managerId === managerId);
-  const ordered = [...members].sort((a, b) => sortByAttendance(a, b, salesState));
-  if (!carriedSalesId) return ordered;
-  const carried = ordered.find((s) => s.id === carriedSalesId);
-  if (!carried) return ordered;
-  return [carried, ...ordered.filter((s) => s.id !== carriedSalesId)];
-}
-
-/**
- * The «Shiffted ❌» lines of the statement — decided AUTOMATICALLY by the
- * busy/available mark shown on the assign screen.
- *
- * Every member of the team on turn whose status is `busy` (مشغول — whether he
- * was marked busy BY HAND on the attendance board / assign screen or he is
- * sitting with another client) or `absent` (لم يحضر) is written as one
- * `Sales : … Shiffted ❌` line, in `teamTurnOrder()` order, so the statement and
- * the picker read the same chain. The available members — including the one
- * serving the client — can never appear here.
- *
- * `excludeIds` is the only manual input left: a member the manager tapped on the
- * assign screen to keep OUT of the statement.
- */
-export function shiftedSalesFor(
-  managerId: string,
-  salesState: Record<string, SalesState>,
-  salesList: SalesPerson[] = SALES,
-  carriedSalesId?: string | null,
-  excludeIds: string[] = [],
-): ShiftedSalesInfo[] {
-  return teamTurnOrder(managerId, salesState, salesList, carriedSalesId)
-    .filter((s) => {
-      const status = salesState[s.id]?.status ?? 'absent';
-      return status !== 'available' && !excludeIds.includes(s.id);
-    })
-    .map((s) => ({
-      id: s.id,
-      name: s.name,
-      status: salesState[s.id]?.status === 'busy' ? ('busy' as const) : ('absent' as const),
-    }));
-}
-
-/**
- * Only the members who were on turn BEFORE the sales who actually served are
- * «Shiffted ❌». Example: Hala is on turn but absent / marked busy → «Sales :
- * Hala Shiffted ❌», then the next sales in the order serves. Members
- * who come AFTER the serving sales in the turn order are not written at all.
- * If the serving sales is outside the chain (e.g. not found), nothing is cut.
- */
-export function shiftedBeforeServer(
-  managerId: string,
-  servingSalesId: string,
-  shifted: ShiftedSalesInfo[],
-  salesState: Record<string, SalesState>,
-  salesList: SalesPerson[] = SALES,
-  carriedSalesId?: string | null,
-): ShiftedSalesInfo[] {
-  const order = teamTurnOrder(managerId, salesState, salesList, carriedSalesId).map((s) => s.id);
-  const idx = order.indexOf(servingSalesId);
-  if (idx < 0) return shifted;
-  const before = new Set(order.slice(0, idx));
-  return shifted.filter((s) => before.has(s.id));
 }
 
 function teamTurn(
