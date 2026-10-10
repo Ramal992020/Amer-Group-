@@ -40,13 +40,6 @@ interface Props {
   setVisitType: (v: VisitType) => void;
   /** Confirms the MANUALLY chosen sales. */
   onConfirm: (salesId: string) => void;
-  /**
-   * Team members marked «Shiffted ❌» — busy/absent members who were on turn
-   * and got skipped; each one is printed as a `Sales : … Shiffted ❌` line.
-   */
-  shiftedIds: string[];
-  /** Toggles the «Shiffted ❌» mark on a busy/absent member. */
-  onToggleShifted: (id: string) => void;
   totalToday: number;
 }
 
@@ -59,8 +52,6 @@ export function CurrentTurn({
   visitType,
   setVisitType,
   onConfirm,
-  shiftedIds,
-  onToggleShifted,
   totalToday,
 }: Props) {
   const [chosen, setChosen] = useState('');
@@ -151,46 +142,36 @@ export function CurrentTurn({
         <p className="field-label">اختر السيلز من تيم {team.managerName}</p>
         <p className="mb-2 text-[11px] font-medium text-ink-400">
           الاختيار يدوي بالكامل — الترتيب المقترح حسب عدد أدوار كل سيلز وأولوية الحضور.
-          <br />
-          لو السيلز اللي عليه الدور مشغول أو مش موجود، اضغط عليه لتعليمه{' '}
-          <span className="font-extrabold text-red-500">Shiffted ❌</span> فيظهر كده في البيان.
         </p>
         <div className="grid grid-cols-2 gap-2">
           {members.map((m) => {
-            const pickable = m.status === 'available';
-            const markable = m.status === 'busy' || m.status === 'absent';
-            const marked = shiftedIds.includes(m.id);
+            const selectable = m.status === 'available';
             return (
               <button
                 key={m.id}
                 type="button"
-                onClick={() => (pickable ? setChosen(m.id) : markable ? onToggleShifted(m.id) : undefined)}
-                aria-pressed={pickable ? chosen === m.id : marked}
+                disabled={!selectable}
+                onClick={() => setChosen(m.id)}
                 className={cn(
                   'rounded-xl border-2 bg-white px-3 py-2.5 text-right transition',
                   chosen === m.id
                     ? 'border-brand-600 bg-brand-50'
-                    : marked
-                      ? 'border-red-300 bg-red-50/70'
-                      : pickable
-                        ? 'border-ink-100 hover:border-brand-200'
-                        : 'border-dashed border-ink-100 opacity-60 hover:border-amber-300 hover:opacity-100',
+                    : selectable
+                      ? 'border-ink-100 hover:border-brand-200'
+                      : 'border-ink-100 opacity-55',
                 )}
               >
-                <span className="flex flex-wrap items-center gap-1.5">
+                <span className="flex items-center gap-1.5">
                   <span className="truncate text-[13.5px] font-extrabold text-ink-900">{m.name}</span>
                   {m.isManager && <span className="badge badge-red shrink-0">مدير</span>}
                   {m.carried && <span className="badge badge-amber shrink-0">دور أمس</span>}
-                  {marked && <span className="shrink-0 text-[10.5px] font-extrabold text-red-500">Shiffted ❌</span>}
                 </span>
                 <span className="tnum mt-0.5 block text-[10px] font-semibold text-ink-400">
-                  {marked
-                    ? 'هيتكتب في البيان Shiffted ❌'
-                    : m.status === 'busy'
-                      ? 'مشغول الآن مع عميل — اضغط لتعليمه Shiffted'
-                      : m.status === 'absent'
-                        ? 'لم يحضر — اضغط لتعليمه Shiffted'
-                        : `${m.walkCount} دور${m.checkInOrder ? ` • حضور #${m.checkInOrder}` : ''}`}
+                  {m.status === 'busy'
+                    ? 'مشغول الآن مع عميل'
+                    : m.status === 'absent'
+                      ? 'لم يحضر'
+                      : `${m.walkCount} دور${m.checkInOrder ? ` • حضور #${m.checkInOrder}` : ''}`}
                 </span>
               </button>
             );

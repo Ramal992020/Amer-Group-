@@ -19,7 +19,6 @@ import {
   swapInCustomOrder,
   teamOrderFrom,
   teamRoundFrom,
-  teamTurnOrder,
 } from './walkin.ts';
 import type {
   Assignment,
@@ -979,75 +978,5 @@ test('a newly added manager joins the custom cycle where the manager put it', ()
       cycle: custom,
     })?.managerId,
     added.id,
-  );
-});
-
-// ───────────── بيان «تأكيد وبدء المقابلة» — Next الحرفي + سطور Shiffted ❌ ─────────────
-
-test('the receipt Next is the LITERAL next team in the cycle even when nobody attended', () => {
-  const f = fixture();
-  // The team right after «ahmed» in the cycle is «shehata»: make EVERY member
-  // of it absent. The engine still skips it (nothing to serve), but the written
-  // statement must name it — «اللي عليه الدور في الدورة عامة حتى ولو لم يحضر».
-  setTeamStatus(f, 'shehata', 'absent');
-
-  assert.equal(
-    computeNextTeam(f.state, [teamHistory(f, 'ahmed')], f.managers, f.sales, f.heads, {
-      workspace: 'RESTA',
-    })?.managerId,
-    'rewaida',
-    'engine rotation skips the empty team',
-  );
-  assert.equal(
-    successorTeam(f.managers, 'ahmed', undefined, f.sales)?.id,
-    'shehata',
-    'receipt Next names the pure-cycle successor regardless of attendance',
-  );
-});
-
-test('teamTurnOrder lists the full chain — busy and absent members included', () => {
-  const f = fixture(3);
-  const members = f.sales.filter((s) => s.managerId === 'ahmed' && !s.isManager);
-  const [first, second, third] = members;
-  // first: available with 2 walks; second: BUSY with 0 walks; third: ABSENT.
-  f.state[first.id] = { ...f.state[first.id], status: 'available', walkCount: 2 };
-  f.state[second.id] = { ...f.state[second.id], status: 'busy', walkCount: 0 };
-  f.state[third.id] = { ...f.state[third.id], status: 'absent', walkCount: 0, checkInOrder: null };
-
-  const order = teamTurnOrder('ahmed', f.state, f.sales).filter((s) => !s.isManager);
-  // Fairness first (fewest walks → earliest check-in): the busy member is ON
-  // TURN before the available one, and the absent member keeps his slot too.
-  assert.deepEqual(
-    order.map((s) => s.id),
-    [second.id, third.id, first.id],
-  );
-});
-
-test('teamTurnOrder pins yesterday’s carried person first', () => {
-  const f = fixture(3);
-  const members = f.sales.filter((s) => s.managerId === 'ahmed' && !s.isManager);
-  const carried = members[members.length - 1];
-  // Give the carried member the WORST fairness position (most walks).
-  f.state[carried.id] = { ...f.state[carried.id], status: 'busy', walkCount: 9 };
-
-  const order = teamTurnOrder('ahmed', f.state, f.sales, carried.id);
-  assert.equal(order[0].id, carried.id, 'carried person leads the chain even when busy');
-});
-
-test('teamTurnOrder matches availableTeamMembers for the available prefix', () => {
-  const f = fixture(3);
-  const members = f.sales.filter((s) => s.managerId === 'rewaida');
-  // One available member sits in the middle of the fairness order.
-  f.state[members[1].id] = { ...f.state[members[1].id], status: 'absent' };
-  f.state[members[2].id] = { ...f.state[members[2].id], status: 'busy' };
-
-  const full = teamTurnOrder('rewaida', f.state, f.sales).filter(
-    (s) => f.state[s.id]?.status === 'available',
-  );
-  const picker = availableTeamMembers('rewaida', f.state, f.sales);
-  assert.deepEqual(
-    full.map((s) => s.id),
-    picker.map((s) => s.id),
-    'the statement chain and the picker order never disagree',
   );
 });

@@ -35,7 +35,6 @@ import {
   swapInCustomOrder,
   teamOrderFrom,
   teamRoundFrom,
-  teamTurnOrder,
   availableTeamMembers,
   usesFixedTeamRotation,
   carryOverForNewDay,
@@ -52,7 +51,6 @@ import {
   normalizeTeamCycle,
   otherWorkspace,
   setActiveAccount,
-  successorTeam,
   formatTime,
 } from './lib/walkin';
 import {
@@ -72,7 +70,6 @@ import type {
   SalesPerson,
   SalesState,
   PersistedWalkin,
-  ShiftedSalesInfo,
   TeamCycleSettings,
   TeamTurn,
   UndoEntry,
@@ -127,12 +124,8 @@ import { cn } from './utils/cn';
 
 interface DoneInfo {
   assignment: Assignment;
-  /**
-   * The LITERAL next team in the cycle — even when nobody from it attended.
-   * The engine's own rotation still skips empty teams; the written statement
-   * names the pure-cycle successor.
-   */
-  next: { managerName: string } | null;
+  /** Next team on turn — the sales is picked manually when that turn comes. */
+  next: TeamTurn | null;
 }
 
 type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
@@ -306,8 +299,6 @@ function WalkInApp({
   const [lastResetAt, setLastResetAt] = useState<string | null>(boot.lastResetAt);
   const [clientLabel, setClientLabel] = useState('');
   const [visitType, setVisitType] = useState<VisitType>('walkin');
-  /** السيلز اللي اتخطوا (Shiffted ❌) — تعليم يدوي من شاشة إسناد العميل. */
-  const [shiftedIds, setShiftedIds] = useState<string[]>([]);
   const [paused, setPaused] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneInfo | null>(null);
   const [tab, setTab] = useState<Tab>('dashboard');
@@ -1076,17 +1067,6 @@ function WalkInApp({
 
   const availableForTurn = teamRoster.filter((m) => m.status === 'available').length;
 
-  // علَم «Shiffted ❌» يبدأ نظيفاً مع كل عميل جديد ومع كل تيم جديد على الدور —
-  // نفس لحظة تصفير الاختيار اليدوي في CurrentTurn.
-  useEffect(() => {
-    if (assignOpen) setShiftedIds([]);
-  }, [assignOpen, nextTeam?.managerId]);
-
-  /** تعليم/إلغاء تعليم سيلز مشغول أو غايب كـ «Shiffted ❌» في البيان. */
-  const toggleShifted = (id: string) => {
-    setShiftedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  };
-
 
   const totalToday = history.length;
   const presentCount = sales.filter((s) => salesState[s.id]?.status !== 'absent').length;
@@ -1243,19 +1223,6 @@ function WalkInApp({
     const mgr = managers.find((m) => m.id === s.managerId) || { id: s.managerId, name: s.managerId };
     const head = heads.find((h) => h.id === s.headId) || { id: s.headId, name: s.headId };
     const n = seq + 1;
-    // «Shiffted ❌» — السيلز اللي كانوا على الدور واتخطوا (مشغول / مش موجود)،
-    // بالترتيب نفسه اللي في شاشة الاختيار (دور أمس أولاً ثم أولوية الحضور)،
-    // ويُسجَّلون على الإسناد نفسه عشان البيان يطلع بيهم في أي وقت.
-    const shiftedSales: ShiftedSalesInfo[] =
-      nextTeam && nextTeam.managerId === mgr.id
-        ? teamTurnOrder(mgr.id, salesState, sales, nextTeam.carriedSalesId)
-            .filter((m) => shiftedIds.includes(m.id) && salesState[m.id]?.status !== 'available')
-            .map((m) => ({
-              id: m.id,
-              name: m.name,
-              status: salesState[m.id]?.status === 'busy' ? ('busy' as const) : ('absent' as const),
-            }))
-        : [];
     const assignment: Assignment = {
       id: `${Date.now()}-${n}`,
       n,
@@ -1269,7 +1236,6 @@ function WalkInApp({
       clientLabel: clientLabel.trim(),
       substituted: false,
       visitType,
-      ...(shiftedSales.length > 0 ? { shiftedSales } : {}),
     };
 
     // Compact undo record: restores the person's state, the manual team order
@@ -1303,23 +1269,20 @@ function WalkInApp({
     };
     // دور أمس المرحَّل يُستهلك بمجرد خدمة التيم الخاص به.
     const carryAfter = carryOver && carryOver.managerId === mgr.id ? null : carryOver;
-    // «Next» في البيان = اللي عليه الدور في الدورة عامة — التيم اللي يلي التيم
-    // الحالي حرفياً في الدورة، حتى لو لم يحضر أحد منه (محرك الدور نفسه يظل
-    // يتخطى الفرق الفاضية، الفرق بين اللي على الشاشة واللي مكتوب في البيان).
-    const nextAfter = successorTeam(managers, mgr.id, cycleSettings, sales);
+    const nextAfter = computeNextTeam(newSalesState, newHistory, managers, sales, heads, {
+      workspace: account,
+      carryOver: carryAfter,
+      cycle: cycleSettings,
+    });
     setSeq(n);
     setHistory(newHistory);
     setSalesState(newSalesState);
     setCarryOver(carryAfter);
     setClientLabel('');
     setVisitType('walkin');
-    setShiftedIds([]);
     setManualOrder((prev) => (prev.length > 0 ? prev.filter((id) => id !== mgr.id) : prev));
     setAssignOpen(false);
-    setDoneInfo({
-      assignment,
-      next: nextAfter ? { managerName: nextAfter.name } : null,
-    });
+    setDoneInfo({ assignment, next: nextAfter });
   };
 
   const undoLast = () => {
@@ -2139,20 +2102,13 @@ function WalkInApp({
             visitType={visitType}
             setVisitType={setVisitType}
             onConfirm={(salesId) => confirmWith(salesId)}
-            shiftedIds={shiftedIds}
-            onToggleShifted={toggleShifted}
             totalToday={totalToday}
           />
         )}
       </Modal>
 
       {doneInfo && (
-        <DoneReceipt
-          assignment={doneInfo.assignment}
-          next={doneInfo.next}
-          shifted={doneInfo.assignment.shiftedSales}
-          onClose={() => setDoneInfo(null)}
-        />
+        <DoneReceipt assignment={doneInfo.assignment} next={doneInfo.next} onClose={() => setDoneInfo(null)} />
       )}
     </div>
   );
