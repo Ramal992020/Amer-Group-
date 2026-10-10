@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { UserCheck, UserX, Users, Crown, Clock, CircleAlert } from 'lucide-react';
+import { UserCheck, Users, Crown, Clock, CircleAlert } from 'lucide-react';
 import type { TeamTurn, VisitType } from '../lib/walkin';
 import { cn } from '../utils/cn';
 
@@ -30,13 +30,6 @@ export interface UpcomingTeam {
   available: number;
 }
 
-/** The status mark printed on EVERY member card — the source of the statement. */
-const STATUS_BADGE: Record<TeamMemberOption['status'], { label: string; className: string }> = {
-  available: { label: 'متاح', className: 'badge badge-green' },
-  busy: { label: 'مشغول', className: 'badge badge-amber' },
-  absent: { label: 'لم يحضر', className: 'badge badge-gray' },
-};
-
 interface Props {
   team: TeamTurn | null;
   members: TeamMemberOption[];
@@ -48,15 +41,11 @@ interface Props {
   /** Confirms the MANUALLY chosen sales. */
   onConfirm: (salesId: string) => void;
   /**
-   * Team members written «Shiffted ❌» — decided AUTOMATICALLY from the status
-   * mark: everyone busy (مشغول) or absent (لم يحضر) on the team that is on turn.
-   * Each one prints a `Sales : … Shiffted ❌` line in the statement.
+   * Team members marked «Shiffted ❌» — busy/absent members who were on turn
+   * and got skipped; each one is printed as a `Sales : … Shiffted ❌` line.
    */
   shiftedIds: string[];
-  /**
-   * Tapping a busy/absent member takes him OUT of the statement (tapping again
-   * puts him back) — the only manual control left over the automatic lines.
-   */
+  /** Toggles the «Shiffted ❌» mark on a busy/absent member. */
   onToggleShifted: (id: string) => void;
   totalToday: number;
 }
@@ -115,12 +104,6 @@ export function CurrentTurn({
             <Users className="size-3" />
             {available} متاح للاختيار
           </span>
-          {shiftedIds.length > 0 && (
-            <span className="badge badge-red">
-              <UserX className="size-3" />
-              {shiftedIds.length} Shiffted ❌ تلقائياً
-            </span>
-          )}
           {team.isFallback && <span className="badge badge-amber">تخطي فرق غير متاحة</span>}
         </div>
         <p className="mx-auto mt-3 max-w-sm text-[12px] leading-relaxed text-ink-400">{team.reason}</p>
@@ -167,30 +150,21 @@ export function CurrentTurn({
       <div className="mt-5">
         <p className="field-label">اختر السيلز من تيم {team.managerName}</p>
         <p className="mb-2 text-[11px] font-medium text-ink-400">
-          على كل سيلز علامة حالته:{' '}
-          <span className="font-extrabold text-emerald-600">متاح</span> أو{' '}
-          <span className="font-extrabold text-amber-600">مشغول</span> أو{' '}
-          <span className="font-extrabold text-ink-500">لم يحضر</span> — والاختيار من المتاحين فقط.
+          الاختيار يدوي بالكامل — الترتيب المقترح حسب عدد أدوار كل سيلز وأولوية الحضور.
           <br />
-          أي سيلز <span className="font-extrabold">مشغول</span> أو{' '}
-          <span className="font-extrabold">لم يحضر</span> هيتكتب{' '}
-          <span className="font-extrabold text-red-500">Shiffted ❌</span> في البيان{' '}
-          <span className="font-extrabold">تلقائياً</span> — اضغط عليه لو عايز تستثنيه منه.
+          لو السيلز اللي عليه الدور مشغول أو مش موجود، اضغط عليه لتعليمه{' '}
+          <span className="font-extrabold text-red-500">Shiffted ❌</span> فيظهر كده في البيان.
         </p>
         <div className="grid grid-cols-2 gap-2">
           {members.map((m) => {
             const pickable = m.status === 'available';
-            const skipped = m.status === 'busy' || m.status === 'absent';
-            // The «Shiffted ❌» line is AUTOMATIC for every busy/absent member —
-            // tapping the card is only how the manager keeps one of them OUT.
-            const marked = skipped && shiftedIds.includes(m.id);
-            const excluded = skipped && !marked;
-            const badge = STATUS_BADGE[m.status];
+            const markable = m.status === 'busy' || m.status === 'absent';
+            const marked = shiftedIds.includes(m.id);
             return (
               <button
                 key={m.id}
                 type="button"
-                onClick={() => (pickable ? setChosen(m.id) : skipped ? onToggleShifted(m.id) : undefined)}
+                onClick={() => (pickable ? setChosen(m.id) : markable ? onToggleShifted(m.id) : undefined)}
                 aria-pressed={pickable ? chosen === m.id : marked}
                 className={cn(
                   'rounded-xl border-2 bg-white px-3 py-2.5 text-right transition',
@@ -205,17 +179,18 @@ export function CurrentTurn({
               >
                 <span className="flex flex-wrap items-center gap-1.5">
                   <span className="truncate text-[13.5px] font-extrabold text-ink-900">{m.name}</span>
-                  <span className={cn('shrink-0', badge.className)}>{badge.label}</span>
                   {m.isManager && <span className="badge badge-red shrink-0">مدير</span>}
                   {m.carried && <span className="badge badge-amber shrink-0">دور أمس</span>}
                   {marked && <span className="shrink-0 text-[10.5px] font-extrabold text-red-500">Shiffted ❌</span>}
                 </span>
                 <span className="tnum mt-0.5 block text-[10px] font-semibold text-ink-400">
                   {marked
-                    ? 'هيتكتب في البيان Shiffted ❌ — اضغط للاستثناء'
-                    : excluded
-                      ? `${badge.label} — مستثنى من البيان، اضغط لإرجاعه`
-                      : `${m.walkCount} دور${m.checkInOrder ? ` • حضور #${m.checkInOrder}` : ''}`}
+                    ? 'هيتكتب في البيان Shiffted ❌'
+                    : m.status === 'busy'
+                      ? 'مشغول الآن مع عميل — اضغط لتعليمه Shiffted'
+                      : m.status === 'absent'
+                        ? 'لم يحضر — اضغط لتعليمه Shiffted'
+                        : `${m.walkCount} دور${m.checkInOrder ? ` • حضور #${m.checkInOrder}` : ''}`}
                 </span>
               </button>
             );

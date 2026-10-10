@@ -66,20 +66,12 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
 * The receipt (`DoneReceipt`) is exactly:
   `Walk in (Branch) Done ✅ / [Sales : S Shiffted ❌ …] / Sales : X Done✅ /
   Manager : … / Head : … / Next : تيم …`
-  * **Every member card on the assign screen carries his status mark** —
-    «متاح» / «مشغول» / «لم يحضر» (`STATUS_BADGE` in `CurrentTurn`), and only the
-    available ones can be picked.
-  * **Shiffted ❌ lines are AUTOMATIC** — `shiftedSalesFor()` (`src/lib/walkin.ts`)
-    returns every member of the team on turn whose status is `busy` or `absent`,
-    in `teamTurnOrder()` order, so the statement and the picker can never
-    disagree. App derives them (`shiftedMembers`) and saves them on the
-    assignment as `Assignment.shiftedSales`; each one prints a
-    `Sales : … Shiffted ❌` line before the `Done✅` line. Available members —
-    including the sales who serves the client — can never appear there. The only
-    manual control left is the *exception*: tapping a busy/absent card keeps him
-    out of the statement (`unshiftedIds`), tapping again puts him back.
-  * `statementText()` (in `DoneReceipt`) is the single source of the copied text,
-    shared by the clipboard and the tests.
+  * **Shiffted ❌ lines are optional and MANUAL**: on the assign screen, tapping
+    a busy or absent member marks him «Shiffted» (`shiftedIds` in `App` →
+    `Assignment.shiftedSales`, read from `teamTurnOrder()` so the statement and
+    the picker can never disagree about the order). Each marked member prints
+    one `Sales : … Shiffted ❌` line before the `Done✅` line — «كان على الدور
+    واتخطى (مشغول / مش موجود)». Available members can never be marked.
   * **Next is the LITERAL next team in the cycle** (`successorTeam()` after the
     served team) — even when nobody from that team attended. The engine's own
     rotation (`computeNextTeam`) still skips empty teams; only the written

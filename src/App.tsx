@@ -35,7 +35,7 @@ import {
   swapInCustomOrder,
   teamOrderFrom,
   teamRoundFrom,
-  shiftedSalesFor,
+  teamTurnOrder,
   availableTeamMembers,
   usesFixedTeamRotation,
   carryOverForNewDay,
@@ -306,12 +306,8 @@ function WalkInApp({
   const [lastResetAt, setLastResetAt] = useState<string | null>(boot.lastResetAt);
   const [clientLabel, setClientLabel] = useState('');
   const [visitType, setVisitType] = useState<VisitType>('walkin');
-  /**
-   * الاستثناء اليدوي الوحيد: سيلز مشغول/لم يحضر وضغط المدير عليه في شاشة
-   * الإسناد عشان ما يتكتبش «Shiffted ❌». التعليم نفسه تلقائي من علامة
-   * «مشغول / متاح» على الكارت — مفيش حاجة تتعلَّم باليد.
-   */
-  const [unshiftedIds, setUnshiftedIds] = useState<string[]>([]);
+  /** السيلز اللي اتخطوا (Shiffted ❌) — تعليم يدوي من شاشة إسناد العميل. */
+  const [shiftedIds, setShiftedIds] = useState<string[]>([]);
   const [paused, setPaused] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneInfo | null>(null);
   const [tab, setTab] = useState<Tab>('dashboard');
@@ -1080,29 +1076,15 @@ function WalkInApp({
 
   const availableForTurn = teamRoster.filter((m) => m.status === 'available').length;
 
-  // «Shiffted ❌» — تلقائي بالكامل من علامة الحالة على الكارت: كل عضو في تيم
-  // الدور حالته «مشغول» أو «لم يحضر» بيتكتب في البيان، بنفس ترتيب الشاشة
-  // (دور أمس أولاً ثم أولوية الحضور). المتاح — ومنه اللي هياخد العميل — لا
-  // يظهر هنا أبداً، والاستثناء الوحيد هو اللي المدير ضغط عليه (`unshiftedIds`).
-  const shiftedMembers: ShiftedSalesInfo[] = useMemo(
-    () =>
-      nextTeam
-        ? shiftedSalesFor(nextTeam.managerId, salesState, sales, nextTeam.carriedSalesId, unshiftedIds)
-        : [],
-    [nextTeam, salesState, sales, unshiftedIds],
-  );
-  /** المعرّفات المعلَّمة — للعلامة الحمراء على شاشة الاختيار. */
-  const shiftedIds = useMemo(() => shiftedMembers.map((m) => m.id), [shiftedMembers]);
-
-  // الاستثناء اليدوي يبدأ نظيفاً مع كل عميل جديد ومع كل تيم جديد على الدور —
+  // علَم «Shiffted ❌» يبدأ نظيفاً مع كل عميل جديد ومع كل تيم جديد على الدور —
   // نفس لحظة تصفير الاختيار اليدوي في CurrentTurn.
   useEffect(() => {
-    if (assignOpen) setUnshiftedIds([]);
+    if (assignOpen) setShiftedIds([]);
   }, [assignOpen, nextTeam?.managerId]);
 
-  /** ضغط المدير على سيلز مشغول/لم يحضر: يستثنيه من سطور البيان — ويضغط تاني يرجّعه. */
+  /** تعليم/إلغاء تعليم سيلز مشغول أو غايب كـ «Shiffted ❌» في البيان. */
   const toggleShifted = (id: string) => {
-    setUnshiftedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    setShiftedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
 
@@ -1261,11 +1243,19 @@ function WalkInApp({
     const mgr = managers.find((m) => m.id === s.managerId) || { id: s.managerId, name: s.managerId };
     const head = heads.find((h) => h.id === s.headId) || { id: s.headId, name: s.headId };
     const n = seq + 1;
-    // «Shiffted ❌» — المشغول / اللي لم يحضر من تيم الدور، محسوب تلقائياً من
-    // علامة الحالة على شاشة الاختيار (`shiftedMembers`) ويُحفَظ على الإسناد نفسه
-    // عشان البيان يطلع بيهم في أي وقت — حتى بعد ما حالتهم تتغير على الشاشة.
+    // «Shiffted ❌» — السيلز اللي كانوا على الدور واتخطوا (مشغول / مش موجود)،
+    // بالترتيب نفسه اللي في شاشة الاختيار (دور أمس أولاً ثم أولوية الحضور)،
+    // ويُسجَّلون على الإسناد نفسه عشان البيان يطلع بيهم في أي وقت.
     const shiftedSales: ShiftedSalesInfo[] =
-      nextTeam && nextTeam.managerId === mgr.id ? shiftedMembers : [];
+      nextTeam && nextTeam.managerId === mgr.id
+        ? teamTurnOrder(mgr.id, salesState, sales, nextTeam.carriedSalesId)
+            .filter((m) => shiftedIds.includes(m.id) && salesState[m.id]?.status !== 'available')
+            .map((m) => ({
+              id: m.id,
+              name: m.name,
+              status: salesState[m.id]?.status === 'busy' ? ('busy' as const) : ('absent' as const),
+            }))
+        : [];
     const assignment: Assignment = {
       id: `${Date.now()}-${n}`,
       n,
@@ -1323,7 +1313,7 @@ function WalkInApp({
     setCarryOver(carryAfter);
     setClientLabel('');
     setVisitType('walkin');
-    setUnshiftedIds([]);
+    setShiftedIds([]);
     setManualOrder((prev) => (prev.length > 0 ? prev.filter((id) => id !== mgr.id) : prev));
     setAssignOpen(false);
     setDoneInfo({
