@@ -16,7 +16,6 @@ import {
   savePersisted,
   setActiveAccount,
   shiftedSalesFor,
-  shiftedBeforeServer,
   successorTeam,
   swapInCustomOrder,
   teamOrderFrom,
@@ -1134,20 +1133,5 @@ test('a member with no attendance record at all counts as «لم يحضر»', ()
       [a.id, 'busy'],
       [b.id, 'absent'],
     ],
-  );
-});
-
-// ───── Shiffted ❌ فقط لمن كان عليه الدور قبل السيلز اللي خدم ─────
-test('only members on turn BEFORE the serving sales are written Shiffted ❌', () => {
-  const f = fixture(3);
-  const [hala, b, c] = f.sales.filter((s) => s.managerId === 'ahmed' && !s.isManager);
-  f.state[hala.id] = { ...f.state[hala.id], status: 'busy', walkCount: 0, checkInOrder: 1 };
-  f.state[b.id] = { ...f.state[b.id], status: 'available', walkCount: 1, checkInOrder: 2 };
-  f.state[c.id] = { ...f.state[c.id], status: 'absent', walkCount: 2, checkInOrder: null };
-  const all = shiftedSalesFor('ahmed', f.state, f.sales);
-  assert.deepEqual(
-    shiftedBeforeServer('ahmed', b.id, all, f.state, f.sales).map((s) => s.id),
-    [hala.id],
-    'Hala (on turn, busy) is shifted; the absent member after the server is not',
   );
 });

@@ -36,7 +36,6 @@ import {
   teamOrderFrom,
   teamRoundFrom,
   shiftedSalesFor,
-  shiftedBeforeServer,
   availableTeamMembers,
   usesFixedTeamRotation,
   carryOverForNewDay,
@@ -1266,9 +1265,7 @@ function WalkInApp({
     // علامة الحالة على شاشة الاختيار (`shiftedMembers`) ويُحفَظ على الإسناد نفسه
     // عشان البيان يطلع بيهم في أي وقت — حتى بعد ما حالتهم تتغير على الشاشة.
     const shiftedSales: ShiftedSalesInfo[] =
-      nextTeam && nextTeam.managerId === mgr.id
-        ? shiftedBeforeServer(mgr.id, s.id, shiftedMembers, salesState, sales, nextTeam.carriedSalesId)
-        : [];
+      nextTeam && nextTeam.managerId === mgr.id ? shiftedMembers : [];
     const assignment: Assignment = {
       id: `${Date.now()}-${n}`,
       n,
