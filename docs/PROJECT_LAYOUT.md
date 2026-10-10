@@ -37,6 +37,8 @@ grep -o "return=representation" dist/index.html     # PATCH result is verified
 grep -o "postgres_changes" dist/index.html          # Realtime subscription
 grep -o "الفرع الآخر" dist/index.html                # shared roster (org) sync
 grep -o "يظهر في الفرعين SITE و RESTA" dist/index.html # «إضافة عضو جديد» subtitle
+grep -o "Shifted ❌" dist/index.html                  # receipt line for a passed-over team
+grep -o "تم حفظ الدورة وتثبيتها" dist/index.html       # toast after saving the turn order
 grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1/ root
                                                     # check is what killed sync
 ```
@@ -45,10 +47,25 @@ grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1
 
 SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
 
-* `computeNextTeam()` (in `src/lib/walkin.ts`) decides *whose team* is on turn,
-  starting from yesterday's unserved team (`carryOver.managerId`) and otherwise
-  continuing after the most recently served team in the active cycle. Teams
-  with nobody available are skipped in place.
+* `computeTurnPlan()` (in `src/lib/walkin.ts`) returns the whole picture of the
+  turn, with attendance handled separately from the cycle:
+  * `onTurn` — the team the cycle points at, **regardless of attendance**. A
+    carried-over team (`carryOver.managerId`, not served today) is on turn even
+    when it is absent; otherwise the turn continues after the most recently
+    served team. So «الدور الحالي» always shows a team, even when nobody has
+    checked in.
+  * `serving` — the first team from `onTurn` (inclusive) with an available
+    member, or `null` when nobody is available anywhere.
+  * `shiftedTeams` — the teams between `onTurn` and `serving` that have nobody
+    free, each with a reason: `absent`, `busy`, or `allAbsent` (nobody in the
+    whole cycle checked in).
+  `computeNextTeam()` is kept and returns only `serving`, so older callers and
+  tests behave as before. The cycle order itself never moves: a passed-over team
+  is simply not served this round, and the cursor moves past the served team.
+* When `serving !== onTurn` the UI shows the amber notice «محدش حضر منه — المقابلة
+  بالتيم التالي», and the «ابدأ المقابلة» button starts with the serving team.
+  The modal receives `team` (= serving) plus `shiftedTeams`. The confirmed
+  assignment records them as `Assignment.shiftedTeams`.
 * The cycle order itself is a **setting chosen in the app** («طريقة ترتيب
   الأدوار» in the «الترتيب» tab), not a code constant:
   `TeamCycleSettings` is either `auto` (the built-in `AUTOMATIC_TEAM_ORDER`,
@@ -63,10 +80,18 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
   workspaces and `computeNextTurn`/`predictFullRound` delegate to the team path.
 * The «الترتيب» tab renders `teamOrderFrom()` — managers, one row each, with
   their roster and the arrow buttons that write to `manualOrder` (manager IDs).
-* The receipt (`DoneReceipt`) is exactly:
-  `Walk in (Branch) Done ✅ / Sales : X Done✅ / Manager : … / Head : … / Next : …`
-  where **Next is the next manager only** (no sales name). There is no
-  `(shiftted)` line any more — the substitute concept is gone from the flow.
+* The copy text is built by `receiptText()` (`src/lib/walkin.ts`), which
+  `DoneReceipt` also displays:
+  * normal visit: `Walk in (Site) Done ✅ / Sales : X Done✅ / Manager : … / Head : … / Next : …`
+  * visit with passed-over teams (exact, one line per team):
+    `Walk in (Site) / <team> Shifted ❌ / <sales> ✅ / Manager : … / Head : … / Next : …`
+  `Next` is **always the successor team in the cycle** (`successorTeam`), even if
+  that team has nobody present — it is not the serving team and never a sales
+  name. The spelling `Shifted ❌` is fixed on purpose.
+* Visit type is **Site or Resta only** (no «Walk in» option in the modal). The
+  default is the branch you are signed into (RESTA → `resta`, otherwise `site`)
+  and it is restored after every confirmed client. `walkin` remains only as the
+  legacy value stored in old history rows.
 * A carry-over is consumed when its team is served (`managerId` match in
   `confirmWith`), so a served team is never pinned again.
 
@@ -93,6 +118,13 @@ show up in RESTA (and the other way round) without either branch losing a day:
   marked dirty and republished with today's roster instead. Without this, a
   stale attendance push from one device could silently undo a rename made in
   the other branch.
+* The same guard covers a **same-revision** row while this device has an
+  unpublished edit (`orgDirtyRef`, e.g. a turn-order choice not yet pushed):
+  `canAdoptRemoteOrg(incoming, local, localDirty)` adopts only when
+  `incoming > local`, or `incoming === local && !localDirty`. Otherwise the local
+  roster is kept and republished. Before this, the same-revision copy reset a
+  custom turn order back to «تلقائي». Saving the order shows the toast «تم حفظ
+  الدورة وتثبيتها».
 * `mirrorOrgChart` copies the roster into the *other* branch's local bucket on
   the same device, so switching branch shows the new names instantly (and even
   offline). It never downgrades a bucket that already holds a fresher chart.

@@ -1,37 +1,27 @@
 import { useState } from 'react';
-import { CheckCircle2, Copy, Check, ArrowLeft, User, Users, Crown } from 'lucide-react';
-import { formatTime } from '../lib/walkin';
-import type { Assignment, TeamTurn, VisitType } from '../lib/walkin';
+import { CheckCircle2, Copy, Check, ArrowLeft, User, Users, Crown, TriangleAlert } from 'lucide-react';
+import { formatTime, receiptText, visitHeadline } from '../lib/walkin';
+import type { Assignment, ManagerTeam } from '../lib/walkin';
 import { Modal } from './ui';
 
 interface Props {
   assignment: Assignment;
-  /** Next TEAM on turn — no sales name is proposed (the sales is picked manually). */
-  next: TeamTurn | null;
+  /**
+   * The team that follows the served one in the cycle, regardless of attendance
+   * (`successorTeam`). The sales is picked manually when that turn comes.
+   */
+  next: ManagerTeam | null;
   onClose: () => void;
-}
-
-/** «Walk in (الفرع)» — the branch the visit happened at. */
-function visitHeadline(visit: VisitType): string {
-  if (visit === 'site') return 'Walk in (Site)';
-  if (visit === 'resta') return 'Walk in (Resta)';
-  return 'Walk in';
 }
 
 export function DoneReceipt({ assignment, next, onClose }: Props) {
   const [copied, setCopied] = useState(false);
 
-  const visit = assignment.visitType ?? 'walkin';
-  const title = `${visitHeadline(visit)} Done ✅`;
-
-  // البيان المطلوب: الفرع، السيلز اللي تم اختياره (Done ✅)، المدير، الهيد،
-  // ثم المدير اللي عليه الدور — بدون ذكر أي اسم سيلز في «Next».
-  const text =
-    `${title}\n` +
-    `Sales : ${assignment.salesName} Done✅\n` +
-    `Manager : ${assignment.managerName}\n` +
-    `Head : ${assignment.headName}\n` +
-    `Next : ${next ? next.managerName : '—'}`;
+  const shifted = assignment.shiftedTeams ?? [];
+  const skipped = shifted.length > 0;
+  // Same copy text as the clipboard (see `receiptText`).
+  const text = receiptText(assignment, next);
+  const title = skipped ? visitHeadline(assignment.visitType) : `${visitHeadline(assignment.visitType)} Done ✅`;
 
   const copy = async () => {
     try {
@@ -79,12 +69,23 @@ export function DoneReceipt({ assignment, next, onClose }: Props) {
           </div>
         </div>
 
+        {/* shifted teams — one line per team that had nobody free */}
+        {skipped && (
+          <div className="mt-4 space-y-1.5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-left">
+            {shifted.map((t) => (
+              <Row key={t.managerId} icon={<TriangleAlert className="size-4" />} label="Shifted ❌">
+                <span className="text-amber-800">{t.managerName}</span>
+              </Row>
+            ))}
+          </div>
+        )}
+
         {/* current */}
         <div className="mt-4 space-y-2.5 rounded-2xl border border-ink-100 bg-ink-50/70 p-4 text-left">
           <Row icon={<User className="size-4" />} label="Sales :">
             <span className="flex flex-wrap items-center gap-1.5">
               <span>{assignment.salesName}</span>
-              <span className="text-emerald-600">Done✅</span>
+              <span className="text-emerald-600">{skipped ? '✅' : 'Done✅'}</span>
             </span>
           </Row>
           <Row icon={<Users className="size-4" />} label="Manager :">
@@ -95,10 +96,10 @@ export function DoneReceipt({ assignment, next, onClose }: Props) {
           </Row>
         </div>
 
-        {/* next — the manager whose team is on turn, without a sales name */}
+        {/* next — the team that follows in the cycle, without a sales name */}
         <div className="mt-3 space-y-1 rounded-2xl border border-brand-100 bg-brand-50/70 p-4 text-left">
           <Row icon={<ArrowLeft className="size-4" />} label="Next :">
-            {next ? <span className="text-brand-700">تيم {next.managerName}</span> : <span className="text-ink-400">—</span>}
+            {next ? <span className="text-brand-700">تيم {next.name}</span> : <span className="text-ink-400">—</span>}
           </Row>
           <p dir="rtl" className="pl-[106px] text-[10.5px] font-semibold text-ink-400">
             الدور على التيم — يتم اختيار السيلز يدوياً عند الدور

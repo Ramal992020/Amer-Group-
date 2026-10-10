@@ -31,7 +31,9 @@ import {
   HEADS as DEFAULT_HEADS,
   MANAGERS as DEFAULT_MANAGERS,
   SALES as DEFAULT_SALES,
-  computeNextTeam,
+  computeTurnPlan,
+  successorTeam,
+  canAdoptRemoteOrg,
   swapInCustomOrder,
   teamOrderFrom,
   teamRoundFrom,
@@ -63,6 +65,7 @@ import type { OrgState } from './lib/org';
 import type {
   Assignment,
   CarryOver,
+  TurnPlan,
   HeadGroup,
   ManagerTeam,
   OrgChart,
@@ -73,7 +76,6 @@ import type {
   TeamCycleSettings,
   TeamTurn,
   UndoEntry,
-  VisitType,
 } from './lib/walkin';
 import { LoginScreen } from './components/LoginScreen';
 import { WorkspaceGate } from './components/WorkspaceGate';
@@ -100,8 +102,8 @@ import {
   SHARED_ORG_ACCOUNT,
 } from './lib/sync';
 import type { SyncConfig, SyncStatus } from './lib/sync';
-import { CurrentTurn } from './components/CurrentTurn';
-import type { TeamMemberOption, UpcomingTeam } from './components/CurrentTurn';
+import { CurrentTurn, TurnShiftNotice } from './components/CurrentTurn';
+import type { BranchVisit, TeamMemberOption, UpcomingTeam } from './components/CurrentTurn';
 import { AttendanceBoard } from './components/AttendanceBoard';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ClientExcelBuilder } from './components/ClientExcelBuilder';
@@ -124,9 +126,16 @@ import { cn } from './utils/cn';
 
 interface DoneInfo {
   assignment: Assignment;
-  /** Next team on turn — the sales is picked manually when that turn comes. */
-  next: TeamTurn | null;
+  /** The team that follows the served one (attendance ignored) — shown as «Next». */
+  next: ManagerTeam | null;
 }
+
+/**
+ * Default visit type for a branch: RESTA visits are «Resta», everything else
+ * (SITE) is «Site». Restored after every confirmed client.
+ */
+const defaultVisitFor = (account: string): BranchVisit =>
+  account.trim().toUpperCase() === 'RESTA' ? 'resta' : 'site';
 
 type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
 
@@ -298,7 +307,10 @@ function WalkInApp({
   const [carryOver, setCarryOver] = useState<CarryOver | null>(boot.carryOver);
   const [lastResetAt, setLastResetAt] = useState<string | null>(boot.lastResetAt);
   const [clientLabel, setClientLabel] = useState('');
-  const [visitType, setVisitType] = useState<VisitType>('walkin');
+  const [visitType, setVisitType] = useState<BranchVisit>(() => defaultVisitFor(account));
+  useEffect(() => {
+    setVisitType(defaultVisitFor(account));
+  }, [account]);
   const [paused, setPaused] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneInfo | null>(null);
   const [tab, setTab] = useState<Tab>('dashboard');
@@ -476,7 +488,9 @@ function WalkInApp({
     // marked dirty, which republishes today's roster into it instead of
     // letting a stale row undo a name that was edited in the other branch.
     const incomingOrgRev = state.orgRevision ?? 0;
-    if (incomingOrgRev >= sharedOrgRevRef.current) {
+    // A same-revision copy must not replace a roster this device edited and has
+    // not published yet (that is how a custom turn order used to revert to auto).
+    if (canAdoptRemoteOrg(incomingOrgRev, sharedOrgRevRef.current, orgDirtyRef.current)) {
       if (state.customHeads) setHeads(state.customHeads);
       if (state.customManagers) setManagers(state.customManagers);
       if (state.customSales) setSales(state.customSales);
@@ -632,6 +646,7 @@ function WalkInApp({
   const updateCycleSettings = (next: TeamCycleSettings): void => {
     setCycleSettings(normalizeTeamCycle(next));
     markOrgEdited();
+    toast('success', 'تم حفظ الدورة وتثبيتها');
   };
 
   /** Reconnect with exponential backoff after a transient failure. */
@@ -952,10 +967,19 @@ function WalkInApp({
   // ── الدور على التيم (اختيار السيلز يدوي) ──
   // المحرّك يحدد التيم اللي عليه الدور فقط، ومين يقعد مع العميل يتم اختياره
   // يدوياً من نفس التيم — فلا يوجد أي اسم سيلز مقترح تلقائياً.
-  const nextTeam: TeamTurn | null = useMemo(
-    () => (paused ? null : computeNextTeam(salesState, history, managers, sales, heads, rotationOptions)),
+  // `turnPlan.onTurn` is the team the cycle points at (attendance ignored);
+  // `turnPlan.serving` is who actually takes the client; the teams in between
+  // (nobody free) are `shiftedTeams`.
+  const turnPlan: TurnPlan | null = useMemo(
+    () => (paused ? null : computeTurnPlan(salesState, history, managers, sales, heads, rotationOptions)),
     [paused, salesState, history, managers, sales, heads, rotationOptions],
   );
+  const onTurnTeam: ManagerTeam | null = turnPlan?.onTurn ?? null;
+  const onTurnHeadName = onTurnTeam ? heads.find((h) => h.id === onTurnTeam.headId)?.name ?? '' : '';
+  const shiftedTeams = useMemo(() => turnPlan?.shiftedTeams ?? [], [turnPlan]);
+  const nextTeam: TeamTurn | null = turnPlan?.serving ?? null;
+  /** The team on turn has nobody free — the serving team is a later one (or none). */
+  const turnShifted = Boolean(onTurnTeam) && nextTeam?.managerId !== onTurnTeam?.id;
 
   /**
    * كل أعضاء التيم اللي عليه الدور مع حالتهم، والأولوية للمتاحين — والمدير
@@ -1236,6 +1260,7 @@ function WalkInApp({
       clientLabel: clientLabel.trim(),
       substituted: false,
       visitType,
+      shiftedTeams: shiftedTeams.map((t) => ({ ...t })),
     };
 
     // Compact undo record: restores the person's state, the manual team order
@@ -1269,17 +1294,14 @@ function WalkInApp({
     };
     // دور أمس المرحَّل يُستهلك بمجرد خدمة التيم الخاص به.
     const carryAfter = carryOver && carryOver.managerId === mgr.id ? null : carryOver;
-    const nextAfter = computeNextTeam(newSalesState, newHistory, managers, sales, heads, {
-      workspace: account,
-      carryOver: carryAfter,
-      cycle: cycleSettings,
-    });
+    // «Next» is the team that follows the served one in the cycle, attendance aside.
+    const nextAfter = successorTeam(managers, mgr.id, cycleSettings, sales);
     setSeq(n);
     setHistory(newHistory);
     setSalesState(newSalesState);
     setCarryOver(carryAfter);
     setClientLabel('');
-    setVisitType('walkin');
+    setVisitType(defaultVisitFor(account));
     setManualOrder((prev) => (prev.length > 0 ? prev.filter((id) => id !== mgr.id) : prev));
     setAssignOpen(false);
     setDoneInfo({ assignment, next: nextAfter });
@@ -1532,7 +1554,7 @@ function WalkInApp({
                           <Pause className="mx-auto size-6 text-amber-600" />
                           <p className="mt-2 text-[14px] font-extrabold text-ink-900">الترتيب متوقف مؤقتاً</p>
                         </div>
-                      ) : !nextTeam ? (
+                      ) : !onTurnTeam ? (
                         <EmptyState
                           icon={<UserCheck className="size-6" />}
                           title="لا يوجد تيم متاح"
@@ -1547,26 +1569,41 @@ function WalkInApp({
                         <>
                           <div className="flex items-center gap-3 rounded-2xl border border-ink-100 bg-ink-50/70 p-4">
                             <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-brand-600 pulse-ring text-[15px] font-black text-white">
-                              {nextTeam.managerName.slice(0, 2)}
+                              {onTurnTeam.name.slice(0, 2)}
                             </span>
                             <div className="min-w-0 flex-1">
                               <p className="truncate font-display text-[20px] font-black leading-tight text-ink-900">
-                                تيم {nextTeam.managerName}
+                                الدور على تيم {onTurnTeam.name}
                               </p>
                               <p className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                                <span className="badge badge-red">{nextTeam.headName}</span>
-                                <span className="badge badge-green">
-                                  {availableForTurn} سيلز متاح للاختيار
+                                {onTurnHeadName && <span className="badge badge-red">{onTurnHeadName}</span>}
+                                <span className={cn('badge', nextTeam ? 'badge-green' : 'badge-gray')}>
+                                  {nextTeam ? `${availableForTurn} سيلز متاح للاختيار` : 'لا أحد متاح'}
                                 </span>
-                                {nextTeam.carriedSalesName && (
+                                {nextTeam?.carriedSalesName && (
                                   <span className="badge badge-amber">دور أمس: {nextTeam.carriedSalesName}</span>
                                 )}
                               </p>
                             </div>
                           </div>
-                          <button onClick={() => setAssignOpen(true)} className="btn btn-primary mt-3 w-full py-3.5">
+                          {turnShifted && (
+                            <TurnShiftNotice
+                              onTurnName={onTurnTeam.name}
+                              servingName={nextTeam?.managerName ?? null}
+                              shifted={shiftedTeams}
+                            />
+                          )}
+                          <button
+                            onClick={() => setAssignOpen(true)}
+                            disabled={!nextTeam}
+                            className="btn btn-primary mt-3 w-full py-3.5 disabled:opacity-50"
+                          >
                             <UserCheck className="size-5" />
-                            اختر السيلز وابدأ المقابلة
+                            {!nextTeam
+                              ? 'لا يوجد سيلز متاح'
+                              : turnShifted
+                                ? `ابدأ المقابلة مع تيم ${nextTeam.managerName}`
+                                : 'اختر السيلز وابدأ المقابلة'}
                           </button>
                         </>
                       )}
@@ -1690,7 +1727,7 @@ function WalkInApp({
                     <span
                       className={cn(
                         'grid size-11 shrink-0 place-items-center rounded-2xl text-white',
-                        nextTeam ? 'bg-brand-600' : 'bg-ink-300',
+                        onTurnTeam ? 'bg-brand-600' : 'bg-ink-300',
                       )}
                     >
                       <Crown className="size-5" strokeWidth={2.2} />
@@ -1698,13 +1735,21 @@ function WalkInApp({
                     <div className="min-w-0">
                       <p className="text-[11px] font-extrabold text-brand-600">الدور الحالي — على التيم</p>
                       <p className="truncate font-display text-[17px] font-black text-ink-900">
-                        {nextTeam ? `تيم ${nextTeam.managerName}` : 'لا يوجد تيم متاح'}
+                        {onTurnTeam ? `تيم ${onTurnTeam.name}` : 'لا يوجد تيم متاح'}
                       </p>
-                      <p className="truncate text-[11.5px] font-semibold text-ink-400">
-                        {!nextTeam
-                          ? 'سجّل الحضور ليظهر دور التيم'
-                          : `${nextTeam.headName} · اختر السيلز من التيم يدوياً (${availableForTurn} متاح)`}
-                      </p>
+                      {turnShifted ? (
+                        <p className="truncate text-[11.5px] font-extrabold text-amber-700">
+                          {nextTeam
+                            ? `محدش حضر منه — المقابلة بالتيم التالي (${nextTeam.managerName})`
+                            : 'محدش حضر خالص — سجّل الحضور'}
+                        </p>
+                      ) : (
+                        <p className="truncate text-[11.5px] font-semibold text-ink-400">
+                          {!onTurnTeam
+                            ? 'سجّل الحضور ليظهر دور التيم'
+                            : `${onTurnHeadName} · اختر السيلز من التيم يدوياً (${availableForTurn} متاح)`}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <span
@@ -2095,6 +2140,8 @@ function WalkInApp({
         ) : (
           <CurrentTurn
             team={nextTeam}
+            shiftedTeams={shiftedTeams}
+            onTurnName={onTurnTeam?.name ?? null}
             members={teamRoster}
             upcoming={upcomingTeams}
             clientLabel={clientLabel}

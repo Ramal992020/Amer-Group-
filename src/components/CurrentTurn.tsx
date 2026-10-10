@@ -1,13 +1,21 @@
 import { useEffect, useState } from 'react';
-import { UserCheck, Users, Crown, Clock, CircleAlert } from 'lucide-react';
-import type { TeamTurn, VisitType } from '../lib/walkin';
+import { UserCheck, Users, Crown, Clock, CircleAlert, TriangleAlert } from 'lucide-react';
+import type { ShiftedTeam, TeamTurn, VisitType } from '../lib/walkin';
 import { cn } from '../utils/cn';
 
-const VISIT_OPTIONS: { id: VisitType; label: string }[] = [
-  { id: 'walkin', label: 'Walk in' },
+/** Walk-in visits are only ever Site or Resta (the branch the visit happens at). */
+export type BranchVisit = Extract<VisitType, 'site' | 'resta'>;
+
+const VISIT_OPTIONS: { id: BranchVisit; label: string }[] = [
   { id: 'site', label: 'Site' },
   { id: 'resta', label: 'Resta' },
 ];
+
+const SHIFT_REASON_LABEL: Record<ShiftedTeam['reason'], string> = {
+  absent: 'لم يحضر',
+  busy: 'مشغول',
+  allAbsent: 'لم يحضر أحد',
+};
 
 /** A member of the team that is on turn — the sales is chosen from here, manually. */
 export interface TeamMemberOption {
@@ -30,14 +38,63 @@ export interface UpcomingTeam {
   available: number;
 }
 
+/**
+ * Amber notice shown whenever the team on turn has nobody free: the turn moves
+ * on to the serving team, and the passed-over teams are listed.
+ */
+export function TurnShiftNotice({
+  onTurnName,
+  servingName,
+  shifted,
+}: {
+  onTurnName: string;
+  /** Null when nobody is available anywhere in the cycle. */
+  servingName: string | null;
+  shifted: ShiftedTeam[];
+}) {
+  return (
+    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-right">
+      <p className="flex items-center gap-1.5 text-[13px] font-extrabold text-amber-800">
+        <TriangleAlert className="size-4 shrink-0" />
+        {servingName
+          ? 'محدش حضر منه — المقابلة بالتيم التالي'
+          : 'محدش حضر خالص — لا يوجد سيلز متاح حالياً'}
+      </p>
+      <p className="mt-1 text-[12px] font-semibold text-amber-900/80">
+        {servingName ? (
+          <>
+            الدور على تيم {onTurnName} ← المقابلة بتيم {servingName}
+          </>
+        ) : (
+          <>الدور على تيم {onTurnName} — سجّل الحضور ليظهر السيلز</>
+        )}
+      </p>
+      {shifted.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5">
+          {shifted.map((t) => (
+            <li key={t.managerId} className="text-[11.5px] font-bold text-amber-900">
+              تيم {t.managerName} <span className="font-semibold text-amber-700">— {SHIFT_REASON_LABEL[t.reason]}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 interface Props {
+  /** The SERVING team (first team with someone free), or null when nobody is free. */
   team: TeamTurn | null;
+  /** Teams passed over on the way to `team` (nobody free). */
+  shiftedTeams: ShiftedTeam[];
+  /** The team the cycle points at (attendance ignored). */
+  onTurnName: string | null;
   members: TeamMemberOption[];
   upcoming: UpcomingTeam[];
   clientLabel: string;
   setClientLabel: (v: string) => void;
-  visitType: VisitType;
-  setVisitType: (v: VisitType) => void;
+  visitType: BranchVisit;
+  setVisitType: (v: BranchVisit) => void;
   /** Confirms the MANUALLY chosen sales. */
   onConfirm: (salesId: string) => void;
   totalToday: number;
@@ -45,6 +102,8 @@ interface Props {
 
 export function CurrentTurn({
   team,
+  shiftedTeams,
+  onTurnName,
   members,
   upcoming,
   clientLabel,
@@ -67,22 +126,34 @@ export function CurrentTurn({
         <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-amber-50 text-amber-600">
           <CircleAlert className="size-7" strokeWidth={1.9} />
         </span>
-        <h2 className="mt-4 font-display text-[17px] font-extrabold text-ink-900">لا يوجد تيم متاح حالياً</h2>
+        <h2 className="mt-4 font-display text-[17px] font-extrabold text-ink-900">
+          {shiftedTeams.length > 0 ? 'محدش حضر خالص' : 'لا يوجد تيم متاح حالياً'}
+        </h2>
         <p className="mx-auto mt-2 max-w-xs text-[13px] leading-relaxed text-ink-400">
           سجّل حضور السيلز من شاشة اليوم، وسيظهر دور التيم التالي تلقائياً حسب دورة الفرق.
         </p>
+        {shiftedTeams.length > 0 && onTurnName && (
+          <TurnShiftNotice onTurnName={onTurnName} servingName={null} shifted={shiftedTeams} />
+        )}
       </div>
     );
   }
 
   const available = members.filter((m) => m.status === 'available').length;
+  const shifted = shiftedTeams.length > 0;
 
   return (
     <div className="p-5">
+      {shifted && onTurnName && (
+        <TurnShiftNotice onTurnName={onTurnName} servingName={team.managerName} shifted={shiftedTeams} />
+      )}
+
       {/* hero — the turn belongs to a team, never to a preselected sales */}
-      <div className="relative overflow-hidden rounded-2xl border border-ink-100 bg-ink-50/70 p-5 text-center">
+      <div className="relative mt-3 overflow-hidden rounded-2xl border border-ink-100 bg-ink-50/70 p-5 text-center">
         <div aria-hidden className="dot-grid pointer-events-none absolute -left-4 -top-4 h-20 w-20 opacity-60" />
-        <p className="text-[11px] font-bold uppercase tracking-wide text-ink-400">الدور على تيم</p>
+        <p className="text-[11px] font-bold uppercase tracking-wide text-ink-400">
+          {shifted ? 'المقابلة بتيم' : 'الدور على تيم'}
+        </p>
         <p className="mt-1.5 font-display text-[32px] font-black leading-tight text-ink-900 sm:text-[38px]">
           {team.managerName}
         </p>
@@ -95,16 +166,16 @@ export function CurrentTurn({
             <Users className="size-3" />
             {available} متاح للاختيار
           </span>
-          {team.isFallback && <span className="badge badge-amber">تخطي فرق غير متاحة</span>}
+          {team.isFallback && !shifted && <span className="badge badge-amber">تخطي فرق غير متاحة</span>}
         </div>
         <p className="mx-auto mt-3 max-w-sm text-[12px] leading-relaxed text-ink-400">{team.reason}</p>
         <span className="badge badge-blue tnum absolute left-3 top-3">عميل #{totalToday + 1}</span>
       </div>
 
-      {/* visit type */}
+      {/* visit type — Site / Resta only */}
       <div className="mt-5">
         <p className="field-label">نوع الزيارة</p>
-        <div className="grid grid-cols-3 gap-1.5 rounded-xl bg-ink-100 p-1.5">
+        <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-ink-100 p-1.5">
           {VISIT_OPTIONS.map((opt) => (
             <button
               key={opt.id}
