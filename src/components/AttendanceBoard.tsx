@@ -10,13 +10,16 @@ type Branch = 'SITE' | 'RESTA';
 interface Props {
   salesState: Record<string, SalesState>;
   onToggle: (id: string) => void;
+  /** «متاح» — إرجاع السيلز متاح يدوياً (سواء كان مع عميل أو اتعلّم مشغول باليد). */
   onFree: (id: string) => void;
+  /** «مشغول» — المدير هو اللي يقرر، حتى لو السبب بره الشغل. */
+  onBusy: (id: string) => void;
   heads: HeadGroup[];
   managers: ManagerTeam[];
   sales: SalesPerson[];
 }
 
-export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers, sales }: Props) {
+export function AttendanceBoard({ salesState, onToggle, onFree, onBusy, heads, managers, sales }: Props) {
   const toast = useToast();
   const [copyTarget, setCopyTarget] = useState<SalesPerson | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -128,7 +131,7 @@ export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers,
                         const justCopied = copiedId === person.id;
 
                         const subtitle = busy
-                          ? 'مشغول الآن مع عميل'
+                          ? 'مشغول'
                           : present
                             ? person.isManager
                               ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
@@ -151,7 +154,13 @@ export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers,
                             <button
                               type="button"
                               onClick={() => (busy ? onFree(person.id) : onToggle(person.id))}
-                              aria-label={present ? `تسجيل انصراف ${person.name}` : `تسجيل حضور ${person.name}`}
+                              aria-label={
+                                busy
+                                  ? `إرجاع ${person.name} متاح`
+                                  : present
+                                    ? `تسجيل انصراف ${person.name}`
+                                    : `تسجيل حضور ${person.name}`
+                              }
                               className={cn(
                                 'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95',
                                 busy
@@ -212,14 +221,35 @@ export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers,
                               </button>
                             )}
 
-                            {busy && (
-                              <button
-                                onClick={() => onFree(person.id)}
-                                className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px]"
-                              >
-                                إنهاء
-                              </button>
-                            )}
+                            {/*
+                              «مشغول / متاح» — قرار المدير باليد: السيلز ممكن
+                              يكون مشغول في حاجة بره الشغل. الحاضر المتاح ياخد
+                              زرار «مشغول»، والمشغول ياخد «متاح» (بدل «إنهاء»)
+                              يرجّعه متاح تاني — بما فيهم اللي أخد عميل
+                              واتعلّم مشغول تلقائياً.
+                            */}
+                            {present &&
+                              (busy ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onFree(person.id)}
+                                  title="إرجاعه متاح"
+                                  aria-label={`إرجاع ${person.name} متاح`}
+                                  className="btn btn-neutral shrink-0 border-emerald-300 px-2.5 py-2 text-[11px] font-extrabold text-emerald-700 hover:bg-emerald-50"
+                                >
+                                  متاح
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => onBusy(person.id)}
+                                  title="تعليمه مشغول"
+                                  aria-label={`تعليم ${person.name} مشغول`}
+                                  className="btn btn-neutral shrink-0 border-amber-300 px-2.5 py-2 text-[11px] font-extrabold text-amber-700 hover:bg-amber-50"
+                                >
+                                  مشغول
+                                </button>
+                              ))}
                           </div>
                         );
                       })}

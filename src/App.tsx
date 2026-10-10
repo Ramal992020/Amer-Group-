@@ -55,6 +55,7 @@ import {
   setActiveAccount,
   successorTeam,
   formatTime,
+  withBusyMark,
 } from './lib/walkin';
 import {
   applyOrgChart,
@@ -308,9 +309,10 @@ function WalkInApp({
   const [clientLabel, setClientLabel] = useState('');
   const [visitType, setVisitType] = useState<VisitType>('walkin');
   /**
-   * الاستثناء اليدوي الوحيد: سيلز مشغول/لم يحضر وضغط المدير عليه في شاشة
-   * الإسناد عشان ما يتكتبش «Shiffted ❌». التعليم نفسه تلقائي من علامة
-   * «مشغول / متاح» على الكارت — مفيش حاجة تتعلَّم باليد.
+   * الاستثناء اليدوي الوحيد من سطور البيان: سيلز مشغول/لم يحضر وضغط المدير
+   * عليه في شاشة الإسناد عشان ما يتكتبش «Shiffted ❌». التعليم نفسه تلقائي من
+   * علامة «مشغول / متاح» على الكارت — والعلامة دي قرار المدير باليد
+   * (`setSalesBusy`)، حتى لو السيلز مشغول في حاجة بره الشغل.
    */
   const [unshiftedIds, setUnshiftedIds] = useState<string[]>([]);
   const [paused, setPaused] = useState(false);
@@ -1246,8 +1248,35 @@ function WalkInApp({
     }
   };
 
+  /**
+   * «علّمه مشغول» — المدير هو اللي يقرر إذا كان السيلز مشغول ولا متاح، حتى لو
+   * السبب بره الشغل. `withBusyMark` ما يلمسش «لم يحضر» ولا حاجة غير الحالة.
+   */
+  const markBusy = (id: string) => {
+    setSalesState((prev) => withBusyMark(prev, id, true));
+  };
+
+  /**
+   * «متاح» / «خلّيه متاح» — إرجاع السيلز متاح يدوياً: سواء كان اتعلّم مشغول
+   * باليد أو أخد عميل واتعلّم مشغول تلقائياً (`confirmWith`). مفيش رجوع
+   * تلقائي للمتاح بعد كده.
+   */
   const freeSales = (id: string) => {
-    setSalesState((prev) => ({ ...prev, [id]: { ...prev[id], status: 'available' } }));
+    setSalesState((prev) => withBusyMark(prev, id, false));
+  };
+
+  /**
+   * نفس الزرار في شاشة الحضور وشاشة اختيار السيلز: «علّمه مشغول / خلّيه متاح».
+   * التعليم باليد يمسح أي استثناء سابق من سطور «Shiffted ❌» — اللي يتعلّم
+   * مشغول يتكتب في البيان بنفس القاعدة (`shiftedSalesFor` + `shiftedBeforeServer`).
+   */
+  const setSalesBusy = (id: string, busy: boolean) => {
+    if (busy) {
+      markBusy(id);
+      setUnshiftedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev));
+      return;
+    }
+    freeSales(id);
   };
 
   // ── Assignment ──
@@ -1710,7 +1739,7 @@ function WalkInApp({
                     <StatCard
                       label="مشغول"
                       value={busyList.length}
-                      hint="في مقابلة حالياً"
+                      hint="غير متاح لاستقبال عميل"
                       accent="amber"
                       icon={<PhoneCall className="size-5" strokeWidth={2.2} />}
                       progress={sales.length ? (busyList.length / sales.length) * 100 : 0}
@@ -1771,7 +1800,7 @@ function WalkInApp({
                   <section className="surface anim-fade-up p-4">
                     <SectionTitle
                       title="مشغول الآن"
-                      subtitle={`${busyList.length} في مقابلة`}
+                      subtitle={`${busyList.length} غير متاح لاستقبال عميل`}
                       icon={<PhoneCall className="size-4.5" strokeWidth={2.1} />}
                     />
                     <div className="space-y-2">
@@ -1782,10 +1811,13 @@ function WalkInApp({
                         >
                           <div className="min-w-0">
                             <p className="truncate text-[14px] font-extrabold text-ink-900">{s.name}</p>
-                            <p className="text-[11.5px] font-semibold text-amber-700">مشغول مع عميل</p>
+                            <p className="text-[11.5px] font-semibold text-amber-700">مشغول</p>
                           </div>
-                          <button onClick={() => freeSales(s.id)} className="btn btn-neutral shrink-0 px-3 py-2 text-[12px]">
-                            إنهاء
+                          <button
+                            onClick={() => freeSales(s.id)}
+                            className="btn btn-neutral shrink-0 px-3 py-2 text-[12px]"
+                          >
+                            متاح
                           </button>
                         </div>
                       ))}
@@ -1804,6 +1836,7 @@ function WalkInApp({
                     salesState={salesState}
                     onToggle={toggleAttendance}
                     onFree={freeSales}
+                    onBusy={markBusy}
                     heads={heads}
                     managers={managers}
                     sales={sales}
@@ -2154,6 +2187,7 @@ function WalkInApp({
             onConfirm={(salesId) => confirmWith(salesId)}
             shiftedIds={shiftedIds}
             onToggleShifted={toggleShifted}
+            onSetBusy={setSalesBusy}
             totalToday={totalToday}
           />
         )}
