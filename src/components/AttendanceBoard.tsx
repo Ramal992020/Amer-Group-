@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin } from 'lucide-react';
+import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from '../lib/walkin';
 import { formatTime } from '../lib/walkin';
 import { Modal, EmptyState, useToast } from './ui';
 import { cn } from '../utils/cn';
+import { exportAttendanceWorkbook } from '../lib/attendanceExcel';
 
 type Branch = 'SITE' | 'RESTA';
 
@@ -58,15 +59,37 @@ export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers,
   return (
     <div className="space-y-4">
       {/* search */}
-      <div className="relative">
-        <Search className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="ابحث باسم السيلز…"
-          aria-label="ابحث باسم السيلز"
-          className="field pr-10"
-        />
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="ابحث باسم السيلز…"
+            aria-label="ابحث باسم السيلز"
+            className="field pr-10"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            const rows = sales
+              .filter((person) => salesState[person.id]?.status !== 'absent')
+              .sort((a, b) => (salesState[a.id]?.checkInOrder ?? Number.MAX_SAFE_INTEGER) - (salesState[b.id]?.checkInOrder ?? Number.MAX_SAFE_INTEGER))
+              .map((person) => ({
+                person,
+                manager: managers.find((item) => item.id === person.managerId),
+                head: heads.find((item) => item.id === person.headId),
+                attendance: salesState[person.id],
+              }));
+            exportAttendanceWorkbook(rows);
+            toast('success', `تم تجهيز ملف Excel للحضور (${rows.length} أفراد)`);
+          }}
+          className="btn btn-primary shrink-0"
+        >
+          <Download className="size-4" />
+          تحميل Excel الحضور
+        </button>
       </div>
 
       {totalVisible === 0 && (

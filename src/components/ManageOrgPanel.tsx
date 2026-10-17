@@ -8,8 +8,8 @@ interface AddProps {
   heads: HeadGroup[];
   managers: ManagerTeam[];
   onAddHead: (name: string, ar?: string) => void;
-  onAddManager: (name: string, headId: string, ar?: string) => void;
-  onAddSales: (name: string, managerId: string, headId: string) => void;
+  onAddManager: (name: string, headId: string, ar?: string, phone?: string) => void;
+  onAddSales: (name: string, managerId: string, headId: string, phone?: string) => void;
 }
 
 interface Props {
@@ -19,6 +19,7 @@ interface Props {
   onRenameHead: (id: string, name: string, ar?: string) => void;
   onRenameManager: (id: string, name: string, ar?: string) => void;
   onRenameSales: (id: string, name: string) => void;
+  onUpdateSalesDetails: (id: string, phone: string, shiftTime: string) => void;
   onDeleteHead: (id: string) => void;
   onDeleteManager: (id: string) => void;
   onDeleteSales: (id: string) => void;
@@ -32,6 +33,8 @@ interface Draft {
   id: string;
   name: string;
   ar: string;
+  phone: string;
+  shiftTime: string;
 }
 
 /** Compact rename form — edits the name in place instead of deleting + re-adding. */
@@ -40,8 +43,13 @@ function NameEditor({
   name,
   ar,
   withAr,
+  withDetails,
+  phone,
+  shiftTime,
   onName,
   onAr,
+  onPhone,
+  onShiftTime,
   onSave,
   onCancel,
 }: {
@@ -49,8 +57,13 @@ function NameEditor({
   name: string;
   ar: string;
   withAr?: boolean;
+  withDetails?: boolean;
+  phone?: string;
+  shiftTime?: string;
   onName: (value: string) => void;
   onAr?: (value: string) => void;
+  onPhone?: (value: string) => void;
+  onShiftTime?: (value: string) => void;
   onSave: () => void;
   onCancel: () => void;
 }) {
@@ -87,6 +100,31 @@ function NameEditor({
           />
         )}
       </div>
+      {withDetails && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <input
+            dir="ltr"
+            type="tel"
+            value={phone ?? ''}
+            onChange={(e) => onPhone?.(e.target.value)}
+            placeholder="رقم الموبايل"
+            aria-label="رقم الموبايل"
+            className="field"
+            style={compactField}
+          />
+          <label className="flex items-center gap-2 rounded-xl border border-ink-200 bg-white px-2.5">
+            <span className="shrink-0 text-[11px] font-bold text-ink-400">ميعاد الشيفت</span>
+            <input
+              dir="ltr"
+              type="time"
+              value={shiftTime || '10:00'}
+              onChange={(e) => onShiftTime?.(e.target.value)}
+              aria-label="ميعاد الشيفت"
+              className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none"
+            />
+          </label>
+        </div>
+      )}
       <div className="flex gap-1.5">
         <button
           type="submit"
@@ -123,6 +161,8 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
   const [mgrHeadId, setMgrHeadId] = useState(heads[0]?.id || '');
   const [mgrAr, setMgrAr] = useState('');
   const [salesName, setSalesName] = useState('');
+  const [salesPhone, setSalesPhone] = useState('');
+  const [managerPhone, setManagerPhone] = useState('');
   const [salesMgrId, setSalesMgrId] = useState(managers[0]?.id || '');
 
 
@@ -138,10 +178,11 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
   const handleAddManager = (e: React.FormEvent) => {
     e.preventDefault();
     if (!mgrName.trim() || !mgrHeadId) return;
-    onAddManager(mgrName.trim(), mgrHeadId, mgrAr.trim());
+    onAddManager(mgrName.trim(), mgrHeadId, mgrAr.trim(), managerPhone.trim());
     toast('success', `تمت إضافة المدير: ${mgrName.trim()}`);
     setMgrName('');
     setMgrAr('');
+    setManagerPhone('');
   };
 
   const handleAddSales = (e: React.FormEvent) => {
@@ -149,9 +190,10 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
     if (!salesName.trim() || !salesMgrId) return;
     const mgr = managers.find((m) => m.id === salesMgrId);
     if (!mgr) return;
-    onAddSales(salesName.trim(), mgr.id, mgr.headId);
+    onAddSales(salesName.trim(), mgr.id, mgr.headId, salesPhone.trim());
     toast('success', `تمت إضافة السيلز: ${salesName.trim()}`);
     setSalesName('');
+    setSalesPhone('');
   };
 
   const tabs: { id: Kind; label: string; icon: typeof UserPlus }[] = [
@@ -165,7 +207,7 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
       <div className="border-b border-ink-100 p-4">
         <SectionTitle
           title="إضافة عضو جديد"
-          subtitle="اختر النوع ثم أكمل البيانات"
+          subtitle="أدخل رقم الموبايل؛ الشيفت الافتراضي 10:00 ويمكن تعديله من بيانات العضو"
           icon={<Plus className="size-4.5" strokeWidth={2.4} />}
         />
         <div className="grid grid-cols-3 gap-1.5 rounded-xl bg-ink-100 p-1.5">
@@ -201,6 +243,10 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
               />
             </div>
             <div>
+              <label className="field-label">رقم الموبايل (اختياري)</label>
+              <input dir="ltr" type="tel" value={salesPhone} onChange={(e) => setSalesPhone(e.target.value)} placeholder="01xxxxxxxxx" className="field" />
+            </div>
+            <div>
               <label className="field-label">يتبع تيم المدير</label>
               <select value={salesMgrId} onChange={(e) => setSalesMgrId(e.target.value)} className="field">
                 {managers.map((m) => {
@@ -234,6 +280,10 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
             <div>
               <label className="field-label">الاسم بالعربي (اختياري)</label>
               <input value={mgrAr} onChange={(e) => setMgrAr(e.target.value)} placeholder="مثال: حسام" className="field" />
+            </div>
+            <div>
+              <label className="field-label">رقم الموبايل (اختياري)</label>
+              <input dir="ltr" type="tel" value={managerPhone} onChange={(e) => setManagerPhone(e.target.value)} placeholder="01xxxxxxxxx" className="field" />
             </div>
             <div>
               <label className="field-label">يتبع Head Manager</label>
@@ -297,6 +347,7 @@ export function ManageOrgPanel({
   onRenameHead,
   onRenameManager,
   onRenameSales,
+  onUpdateSalesDetails,
   onDeleteHead,
   onDeleteManager,
   onDeleteSales,
@@ -304,8 +355,8 @@ export function ManageOrgPanel({
   const toast = useToast();
   const [draft, setDraft] = useState<Draft | null>(null);
 
-  const startEdit = (kind: Kind, id: string, name: string, ar = '') => {
-    setDraft({ kind, id, name, ar });
+  const startEdit = (kind: Kind, id: string, name: string, ar = '', phone = '', shiftTime = '10:00') => {
+    setDraft({ kind, id, name, ar, phone, shiftTime });
   };
 
   const saveDraft = () => {
@@ -320,7 +371,8 @@ export function ManageOrgPanel({
       toast('success', `تم تعديل اسم المدير إلى ${name}`);
     } else {
       onRenameSales(draft.id, name);
-      toast('success', `تم تعديل اسم السيلز إلى ${name}`);
+      onUpdateSalesDetails(draft.id, draft.phone.trim(), draft.shiftTime || '10:00');
+      toast('success', `تم تعديل بيانات ${name}`);
     }
     setDraft(null);
   };
@@ -460,10 +512,15 @@ export function ManageOrgPanel({
                             return (
                               <div key={s.id} className="basis-full">
                                 <NameEditor
-                                  label={`تعديل اسم السيلز (تيم ${m.name})`}
+                                  label={`تعديل بيانات ${s.isManager ? 'المدير' : 'السيلز'} (تيم ${m.name})`}
                                   name={draft.name}
                                   ar=""
+                                  withDetails
+                                  phone={draft.phone}
+                                  shiftTime={draft.shiftTime}
                                   onName={(v) => setDraft({ ...draft, name: v })}
+                                  onPhone={(v) => setDraft({ ...draft, phone: v })}
+                                  onShiftTime={(v) => setDraft({ ...draft, shiftTime: v })}
                                   onSave={saveDraft}
                                   onCancel={() => setDraft(null)}
                                 />
@@ -477,7 +534,7 @@ export function ManageOrgPanel({
                             >
                               <span className="max-w-[10rem] truncate">{s.name}</span>
                               <button
-                                onClick={() => startEdit('sales', s.id, s.name)}
+                                onClick={() => startEdit('sales', s.id, s.name, '', s.phone ?? '', s.shiftTime || '10:00')}
                                 aria-label={`تعديل اسم ${s.name}`}
                                 title="تعديل الاسم"
                                 className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"

@@ -24,6 +24,10 @@ export interface SalesPerson {
   managerId: string;
   headId: string;
   isManager?: boolean;
+  /** Contact details are part of the shared org chart and are kept across days. */
+  phone?: string;
+  /** Personal shift start; defaults to 10:00 for existing and new members. */
+  shiftTime?: string;
 }
 
 export type SalesStatus = 'absent' | 'available' | 'busy';
