@@ -20,6 +20,7 @@ interface Props {
   onRenameManager: (id: string, name: string, ar?: string) => void;
   onRenameSales: (id: string, name: string) => void;
   onUpdateSalesDetails: (id: string, phone: string, shiftTime: string) => void;
+  onUpdateManagerDetails: (id: string, phone: string) => void;
   onDeleteHead: (id: string) => void;
   onDeleteManager: (id: string) => void;
   onDeleteSales: (id: string) => void;
@@ -44,6 +45,7 @@ function NameEditor({
   ar,
   withAr,
   withDetails,
+  withPhone,
   phone,
   shiftTime,
   onName,
@@ -58,6 +60,8 @@ function NameEditor({
   ar: string;
   withAr?: boolean;
   withDetails?: boolean;
+  /** Just the mobile field (used for a manager's own number). */
+  withPhone?: boolean;
   phone?: string;
   shiftTime?: string;
   onName: (value: string) => void;
@@ -100,6 +104,18 @@ function NameEditor({
           />
         )}
       </div>
+      {withPhone && !withDetails && (
+        <input
+          dir="ltr"
+          type="tel"
+          value={phone ?? ''}
+          onChange={(e) => onPhone?.(e.target.value)}
+          placeholder="رقم موبايل المدير (اختياري)"
+          aria-label="رقم موبايل المدير"
+          className="field"
+          style={compactField}
+        />
+      )}
       {withDetails && (
         <div className="grid gap-2 sm:grid-cols-2">
           <input
@@ -348,6 +364,7 @@ export function ManageOrgPanel({
   onRenameManager,
   onRenameSales,
   onUpdateSalesDetails,
+  onUpdateManagerDetails,
   onDeleteHead,
   onDeleteManager,
   onDeleteSales,
@@ -368,7 +385,8 @@ export function ManageOrgPanel({
       toast('success', `تم تعديل اسم الـ Head إلى ${name}`);
     } else if (draft.kind === 'manager') {
       onRenameManager(draft.id, name, draft.ar.trim());
-      toast('success', `تم تعديل اسم المدير إلى ${name}`);
+      onUpdateManagerDetails(draft.id, draft.phone.trim());
+      toast('success', `تم تعديل بيانات المدير ${name}`);
     } else {
       onRenameSales(draft.id, name);
       onUpdateSalesDetails(draft.id, draft.phone.trim(), draft.shiftTime || '10:00');
@@ -458,12 +476,15 @@ export function ManageOrgPanel({
                       <div className="flex items-center justify-between gap-2">
                         {editingManager && draft ? (
                           <NameEditor
-                            label="تعديل اسم المدير والتيم"
+                            label="تعديل اسم المدير وتيم، ورقمه"
                             name={draft.name}
                             ar={draft.ar}
                             withAr
+                            withPhone
+                            phone={draft.phone}
                             onName={(v) => setDraft({ ...draft, name: v })}
                             onAr={(v) => setDraft({ ...draft, ar: v })}
+                            onPhone={(v) => setDraft({ ...draft, phone: v })}
                             onSave={saveDraft}
                             onCancel={() => setDraft(null)}
                           />
@@ -475,10 +496,15 @@ export function ManageOrgPanel({
                               {m.ar && m.ar !== m.name && (
                                 <span className="truncate text-[11px] font-bold text-ink-400">{m.ar}</span>
                               )}
+                              {m.phone && (
+                                <span dir="ltr" className="tnum shrink-0 text-[10.5px] font-bold text-ink-400">
+                                  {m.phone}
+                                </span>
+                              )}
                             </span>
                             <div className="flex shrink-0 items-center gap-0.5">
                               <button
-                                onClick={() => startEdit('manager', m.id, m.name, m.ar)}
+                                onClick={() => startEdit('manager', m.id, m.name, m.ar, m.phone ?? '')}
                                 aria-label={`تعديل اسم تيم ${m.name}`}
                                 title="تعديل الاسم"
                                 className="grid size-6 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"

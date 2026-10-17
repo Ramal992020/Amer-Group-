@@ -81,6 +81,9 @@ export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers,
                 manager: managers.find((item) => item.id === person.managerId),
                 head: heads.find((item) => item.id === person.headId),
                 attendance: salesState[person.id],
+                // Older data kept the manager's number only on his own row.
+                managerPhone:
+                  sales.find((item) => item.isManager && item.managerId === person.managerId)?.phone ?? '',
               }));
             exportAttendanceWorkbook(rows);
             toast('success', `تم تجهيز ملف Excel للحضور (${rows.length} أفراد)`);

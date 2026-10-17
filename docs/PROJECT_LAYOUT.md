@@ -43,6 +43,25 @@ grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1
                                                     # check is what killed sync
 ```
 
+## Attendance Excel («تحميل Excel الحضور»)
+
+The workbook is built by `createAttendanceWorkbook()` in
+`src/lib/attendanceExcel.ts` and must stay readable on a phone in the morning:
+
+* Layout: `sales | Director | Manager Number | Head | Shift time | time in | Mobile Number`,
+  a merged navy `Sales Team` title row (#172943), a red header row (#C00000),
+  then a 39-row canvas.
+* **Every cell is bold and the data rows are pure white** — the old grey fill
+  (#BFBFBF) has been removed on purpose; only the two header rows keep a fill.
+* **Manager Number** is the team manager's own mobile (`ManagerTeam.phone`).
+  It is edited from «الهيكل» → the pencil next to a team (the same editor that
+  renames it), travels with the shared roster so SITE and RESTA print the same
+  number, and is mirrored onto the manager's own attendance row so the number
+  never drifts. `managerPhoneFor()` falls back to that row for older data.
+
+Grepping the build for `Manager Number` and confirming **no** `BFBFBF` in the
+sheet styling verifies the change reached production.
+
 ## Rotation model — team turns, manual sales choice
 
 SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
