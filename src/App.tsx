@@ -1126,7 +1126,7 @@ function WalkInApp({
   const addManager = (name: string, headId: string, ar?: string, phone = '') => {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `mgr-${Date.now()}`;
     const mgrId = managers.some((m) => m.id === slug) ? `${slug}-${Date.now().toString().slice(-4)}` : slug;
-    setManagers((prev) => [...prev, { id: mgrId, name, ar: ar || name, headId }]);
+    setManagers((prev) => [...prev, { id: mgrId, name, ar: ar || name, headId, phone }]);
     const personId = `${mgrId}-self`;
     setSales((prev) => [...prev, { id: personId, name, managerId: mgrId, headId, isManager: true, phone, shiftTime: '10:00' }]);
     setSalesState((prev) => ({
@@ -1177,10 +1177,29 @@ function WalkInApp({
     commitOrg(renameSalesPerson(orgState(), salesId, name));
   };
 
+  /**
+   * A manager's own number is stored TWICE for compatibility: on the team
+   * (`ManagerTeam.phone`, the field printed in the attendance Excel) and on the
+   * manager's own attendance row (the «مدير» row on the attendance board).
+   * The two are always written together so they can never drift apart.
+   */
+  const updateManagerDetails = (managerId: string, phone: string) => {
+    setManagers((prev) => prev.map((team) => (team.id === managerId ? { ...team, phone } : team)));
+    setSales((prev) =>
+      prev.map((person) => (person.isManager && person.managerId === managerId ? { ...person, phone } : person)),
+    );
+    markOrgEdited();
+  };
+
   const updateSalesDetails = (salesId: string, phone: string, shiftTime: string) => {
-    setSales((prev) => prev.map((person) =>
-      person.id === salesId ? { ...person, phone, shiftTime: shiftTime || '10:00' } : person,
+    const person = sales.find((s) => s.id === salesId);
+    setSales((prev) => prev.map((item) =>
+      item.id === salesId ? { ...item, phone, shiftTime: shiftTime || '10:00' } : item,
     ));
+    // Editing the manager's own row edits the team's number as well.
+    if (person?.isManager) {
+      setManagers((prev) => prev.map((team) => (team.id === person.managerId ? { ...team, phone } : team)));
+    }
     markOrgEdited();
   };
 
@@ -2019,6 +2038,7 @@ function WalkInApp({
                   onRenameManager={updateManagerName}
                   onRenameSales={updateSalesName}
                   onUpdateSalesDetails={updateSalesDetails}
+                  onUpdateManagerDetails={updateManagerDetails}
                   onDeleteHead={deleteHead}
                   onDeleteManager={deleteManager}
                   onDeleteSales={deleteSales}

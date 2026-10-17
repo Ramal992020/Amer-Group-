@@ -16,6 +16,8 @@ export interface ManagerTeam {
   name: string;
   ar: string;
   headId: string;
+  /** The manager's own mobile number — printed in the attendance Excel. */
+  phone?: string;
 }
 
 export interface SalesPerson {
