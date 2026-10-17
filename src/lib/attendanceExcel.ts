@@ -6,11 +6,6 @@ export interface AttendanceWorkbookRow {
   manager?: ManagerTeam;
   head?: HeadGroup;
   attendance?: SalesState;
-  /**
-   * The manager's number when it is not stored on the team itself (older data,
-   * where the number only lived on the manager's own attendance row).
-   */
-  managerPhone?: string;
 }
 
 const DIRECTORS: Record<string, string> = {
@@ -44,14 +39,14 @@ const asTime = (value?: string | null): string => {
 };
 
 /**
- * The template the team works with, extended with the managers' own numbers:
- *   sales | Director | Manager Number | Head | Shift time | time in | Mobile Number
+ * The template the team works with — unchanged: six columns.
+ *   sales | Director | Head | Shift time | time in | Mobile Number
  *
  * Every value is bold and the data rows are pure white — only the two header
  * rows keep their brand fills (navy #172943 for «Sales Team», red #C00000 for
  * the column titles).
  */
-const HEADERS = ['sales', 'Director', 'Manager Number', 'Head', 'Shift time', 'time in', 'Mobile Number'];
+const HEADERS = ['sales', 'Director', 'Head', 'Shift time', 'time in', 'Mobile Number'];
 const COLUMN_COUNT = HEADERS.length;
 const NAVY = '172943';
 const RED = 'C00000';
@@ -61,20 +56,20 @@ const INK = '111111';
 const CANVAS_ROWS = 39;
 
 /**
- * The manager's own mobile number.
+ * The number printed in «Mobile Number».
  *
- * `ManagerTeam.phone` is the source of truth (it is part of the shared roster,
- * so it reaches both branches); a manager's own attendance row is a mirror of
- * the same number and is used as a fallback for data saved before the number
- * was editable on the team.
+ * A manager's number is edited from «الهيكل» exactly like a sales number, so
+ * the row itself is the source. `ManagerTeam.phone` is the same value stored on
+ * the team (that is what the «الهيكل» pencil writes), and it is used as a
+ * fallback for a manager's own row saved before the team carried the number.
  */
-export const managerPhoneFor = (row: AttendanceWorkbookRow): string => {
-  const fromTeam = (row.manager?.phone ?? '').trim();
-  if (fromTeam) return fromTeam;
+export const mobileFor = (row: AttendanceWorkbookRow): string => {
+  const own = (row.person.phone ?? '').trim();
+  if (own) return own;
   if (row.person.isManager && row.person.managerId === row.manager?.id) {
-    return (row.person.phone ?? '').trim();
+    return (row.manager?.phone ?? '').trim();
   }
-  return (row.managerPhone ?? '').trim();
+  return '';
 };
 
 /** Builds the attendance workbook in the same layout as the supplied template. */
@@ -88,11 +83,10 @@ export const createAttendanceWorkbook = (rows: AttendanceWorkbookRow[]): XLSX.Wo
       return [
         person.name,
         directorFor(manager?.name ?? '', head?.name ?? '', manager?.id ?? ''),
-        managerPhoneFor(row),
         head?.name ?? '',
         person.shiftTime || '10:00',
         asTime(attendance?.checkInTime),
-        person.phone ?? '',
+        mobileFor(row),
       ];
     }),
   ];
@@ -102,13 +96,12 @@ export const createAttendanceWorkbook = (rows: AttendanceWorkbookRow[]): XLSX.Wo
   const sheet = XLSX.utils.aoa_to_sheet(grid);
   sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: COLUMN_COUNT - 1 } }];
   sheet['!cols'] = [
-    { wch: 29 }, // sales
-    { wch: 27 }, // Director
-    { wch: 17 }, // Manager Number
-    { wch: 19 }, // Head
-    { wch: 12 }, // Shift time
-    { wch: 11 }, // time in
-    { wch: 17 }, // Mobile Number
+    { wch: 29 },
+    { wch: 28 },
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 18 },
   ];
   sheet['!rows'] = [{ hpt: 22 }, { hpt: 19 }, ...grid.slice(2).map(() => ({ hpt: 19 }))];
   sheet['!ref'] = `A1:${XLSX.utils.encode_col(COLUMN_COUNT - 1)}${Math.max(2, grid.length)}`;

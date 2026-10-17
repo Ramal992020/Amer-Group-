@@ -406,9 +406,10 @@ export function ManageOrgPanel({
       <p className="mb-3 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-[11px] font-semibold leading-relaxed text-emerald-700">
         <Pencil className="mt-0.5 size-3.5 shrink-0" />
         <span>
-          للتعديل على أي اسم اضغط أيقونة القلم بجانبه. التعديل بيحصل على نفس الشخص — الحضور والعدّاد وترتيب
-          الدور والسجل كلهم بيفضلوا زي ما هم، مش حذف وإضافة من جديد. والاسم الجديد بيظهر في الفرعين SITE
-          و RESTA.
+          للتعديل على أي اسم أو رقم موبايل اضغط أيقونة القلم بجانبه — المدير بيتعدل بنفس الطريقة زي السيلز
+          (الاسم + الرقم + الشيفت)، ورقمه بيطلع في عمود Mobile Number في ملف الحضور. التعديل بيحصل على نفس
+          الشخص: الحضور والعدّاد وترتيب الدور والسجل كلهم بيفضلوا زي ما هم. والاسم الجديد بيظهر في الفرعين
+          SITE و RESTA.
         </span>
       </p>
 
@@ -469,7 +470,11 @@ export function ManageOrgPanel({
 
               <div className="space-y-2 p-2.5">
                 {hMgrs.map((m) => {
+                  // The manager has his own attendance row (`isManager`) — it is
+                  // edited exactly like a sales row, phone number included.
+                  const mManager = sales.filter((s) => s.isManager && s.managerId === m.id);
                   const mSales = sales.filter((s) => s.managerId === m.id && !s.isManager);
+                  const mTeam = [...mManager, ...mSales];
                   const editingManager = draft && draft.kind === 'manager' && draft.id === m.id;
                   return (
                     <div key={m.id} className="rounded-lg bg-ink-50/60 p-2.5">
@@ -532,7 +537,7 @@ export function ManageOrgPanel({
                       </div>
 
                       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        {mSales.map((s) => {
+                        {mTeam.map((s) => {
                           const editingSales = draft && draft.kind === 'sales' && draft.id === s.id;
                           if (editingSales && draft) {
                             return (
@@ -559,27 +564,36 @@ export function ManageOrgPanel({
                               className="inline-flex items-center gap-0.5 rounded-lg border border-ink-200 bg-white py-0.5 pe-0.5 ps-2 text-[11px] font-bold text-ink-700"
                             >
                               <span className="max-w-[10rem] truncate">{s.name}</span>
+                              {s.isManager && (
+                                <span className="shrink-0 rounded bg-brand-50 px-1 text-[9px] font-extrabold text-brand-600">
+                                  مدير
+                                </span>
+                              )}
                               <button
-                                onClick={() => startEdit('sales', s.id, s.name, '', s.phone ?? '', s.shiftTime || '10:00')}
-                                aria-label={`تعديل اسم ${s.name}`}
-                                title="تعديل الاسم"
+                                onClick={() =>
+                                  startEdit('sales', s.id, s.name, '', s.phone ?? m.phone ?? '', s.shiftTime || '10:00')
+                                }
+                                aria-label={`تعديل بيانات ${s.name}`}
+                                title={s.isManager ? 'تعديل الاسم والرقم والشيفت' : 'تعديل الاسم والرقم'}
                                 className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
                               >
                                 <Pencil className="size-3" />
                               </button>
-                              <button
-                                onClick={() => {
-                                  if (window.confirm(`حذف السيلز "${s.name}"؟`)) {
-                                    onDeleteSales(s.id);
-                                    toast('info', `تم حذف ${s.name}`);
-                                  }
-                                }}
-                                aria-label={`حذف ${s.name}`}
-                                title="حذف"
-                                className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                              >
-                                <X className="size-3" />
-                              </button>
+                              {!s.isManager && (
+                                <button
+                                  onClick={() => {
+                                    if (window.confirm(`حذف السيلز "${s.name}"؟`)) {
+                                      onDeleteSales(s.id);
+                                      toast('info', `تم حذف ${s.name}`);
+                                    }
+                                  }}
+                                  aria-label={`حذف ${s.name}`}
+                                  title="حذف"
+                                  className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                >
+                                  <X className="size-3" />
+                                </button>
+                              )}
                             </span>
                           );
                         })}

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import XLSX from 'xlsx-js-style';
-import { createAttendanceWorkbook, directorFor, managerPhoneFor } from './attendanceExcel.ts';
+import { createAttendanceWorkbook, directorFor, mobileFor } from './attendanceExcel.ts';
 import type { AttendanceWorkbookRow } from './attendanceExcel.ts';
 
 const sample: AttendanceWorkbookRow[] = [{
@@ -16,13 +16,12 @@ test('attendance workbook uses the requested six headers and data columns', () =
   const sheet = workbook.Sheets['Sales Team'];
   const exportedRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true }) as unknown[][];
   assert.deepEqual(exportedRows.slice(0, 3), [
-    ['Sales Team', '', '', '', '', '', ''],
-    ['sales', 'Director', 'Manager Number', 'Head', 'Shift time', 'time in', 'Mobile Number'],
-    ['Sam Sales', 'Sayed Magdy', '01111111111', 'Khaled Youssef', '10:00', '08:25', '01000000000'],
+    ['Sales Team', '', '', '', '', ''],
+    ['sales', 'Director', 'Head', 'Shift time', 'time in', 'Mobile Number'],
+    ['Sam Sales', 'Sayed Magdy', 'Khaled Youssef', '10:00', '08:25', '01000000000'],
   ]);
-  assert.equal(sheet['!ref'], 'A1:G39');
-  assert.equal(sheet['!merges']?.[0].e.c, 6);
-  assert.equal(sheet.G1.s.fill.fgColor.rgb, '172943');
+  assert.equal(sheet['!ref'], 'A1:F39');
+  assert.equal(sheet['!merges']?.[0].e.c, 5);
   assert.equal(sheet.A1.s.fill.fgColor.rgb, '172943');
   assert.equal(sheet.A2.s.fill.fgColor.rgb, 'C00000');
   // Data rows: white background (the gray template fill is gone) and bold text,
@@ -34,9 +33,6 @@ test('attendance workbook uses the requested six headers and data columns', () =
   // The blank rows of the 39-row canvas are styled the same way (white + bold).
   assert.equal(sheet.A12.s.fill.fgColor.rgb, 'FFFFFF');
   assert.equal(sheet.A12.s.font.bold, true);
-  // Every data cell of the last column is styled too (7 columns, not 6).
-  assert.equal(sheet.G3.s.fill.fgColor.rgb, 'FFFFFF');
-  assert.equal(sheet.G3.s.font.bold, true);
 });
 
 test('directors resolve by stable team id, known team name, then head fallback', () => {
@@ -45,20 +41,22 @@ test('directors resolve by stable team id, known team name, then head fallback',
   assert.equal(directorFor('Other Team', 'Head Name'), 'Head Name');
 });
 
-test('the manager number falls back to the manager\'s own attendance row', () => {
+test("a manager's own row prints the number edited for him in «الهيكل»", () => {
   const [row] = sample;
-  assert.equal(managerPhoneFor(row), '01111111111');
-  assert.equal(managerPhoneFor({ ...row, manager: { ...row.manager!, phone: '' } }), '');
-  assert.equal(
-    managerPhoneFor({
-      ...row,
-      manager: { ...row.manager!, phone: '' },
-      person: { ...row.person, name: 'Ahmed Yossry', isManager: true, phone: '01222222222' },
-    }),
-    '01222222222',
-  );
-  assert.equal(
-    managerPhoneFor({ ...row, manager: { ...row.manager!, phone: '' }, managerPhone: '01099999999' }),
-    '01099999999',
-  );
+  // A regular sales row prints their own number.
+  assert.equal(mobileFor(row), '01000000000');
+
+  // The manager's own attendance row falls back to the number stored on his
+  // team (the field the «الهيكل» pencil writes).
+  const managerRow: AttendanceWorkbookRow = {
+    ...row,
+    person: { ...row.person, id: 'ahmed-yossry', name: 'Ahmed Yossry', isManager: true, phone: '' },
+  };
+  assert.equal(mobileFor(managerRow), '01111111111');
+
+  // Once the number is saved on the row itself, that one wins.
+  assert.equal(mobileFor({ ...managerRow, person: { ...managerRow.person, phone: '01222222222' } }), '01222222222');
+
+  // A sales person never borrows his manager's number.
+  assert.equal(mobileFor({ ...row, person: { ...row.person, phone: '' } }), '');
 });
