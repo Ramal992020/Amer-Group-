@@ -1123,12 +1123,12 @@ function WalkInApp({
     markOrgEdited();
   };
 
-  const addManager = (name: string, headId: string, ar?: string) => {
+  const addManager = (name: string, headId: string, ar?: string, phone = '') => {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `mgr-${Date.now()}`;
     const mgrId = managers.some((m) => m.id === slug) ? `${slug}-${Date.now().toString().slice(-4)}` : slug;
     setManagers((prev) => [...prev, { id: mgrId, name, ar: ar || name, headId }]);
     const personId = `${mgrId}-self`;
-    setSales((prev) => [...prev, { id: personId, name, managerId: mgrId, headId, isManager: true }]);
+    setSales((prev) => [...prev, { id: personId, name, managerId: mgrId, headId, isManager: true, phone, shiftTime: '10:00' }]);
     setSalesState((prev) => ({
       ...prev,
       [personId]: { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, lastServedAt: null },
@@ -1137,10 +1137,10 @@ function WalkInApp({
     markOrgEdited();
   };
 
-  const addSales = (name: string, managerId: string, headId: string) => {
+  const addSales = (name: string, managerId: string, headId: string, phone = '') => {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `sales-${Date.now()}`;
     const id = sales.some((s) => s.id === slug) ? `${slug}-${Date.now().toString().slice(-4)}` : slug;
-    setSales((prev) => [...prev, { id, name, managerId, headId, isManager: false }]);
+    setSales((prev) => [...prev, { id, name, managerId, headId, isManager: false, phone, shiftTime: '10:00' }]);
     setSalesState((prev) => ({
       ...prev,
       [id]: { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, lastServedAt: null },
@@ -1175,6 +1175,13 @@ function WalkInApp({
 
   const updateSalesName = (salesId: string, name: string) => {
     commitOrg(renameSalesPerson(orgState(), salesId, name));
+  };
+
+  const updateSalesDetails = (salesId: string, phone: string, shiftTime: string) => {
+    setSales((prev) => prev.map((person) =>
+      person.id === salesId ? { ...person, phone, shiftTime: shiftTime || '10:00' } : person,
+    ));
+    markOrgEdited();
   };
 
   const deleteHead = (headId: string) => {
@@ -2011,6 +2018,7 @@ function WalkInApp({
                   onRenameHead={updateHeadName}
                   onRenameManager={updateManagerName}
                   onRenameSales={updateSalesName}
+                  onUpdateSalesDetails={updateSalesDetails}
                   onDeleteHead={deleteHead}
                   onDeleteManager={deleteManager}
                   onDeleteSales={deleteSales}
