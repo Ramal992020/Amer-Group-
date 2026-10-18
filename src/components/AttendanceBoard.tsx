@@ -1,14 +1,21 @@
 import { useState } from 'react';
 import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from '../lib/walkin';
-import { formatTime } from '../lib/walkin';
+import { formatTime, hydrate, loadPersisted, otherWorkspace } from '../lib/walkin';
+import { getSyncConfig, pullRemote } from '../lib/sync';
 import { Modal, EmptyState, useToast } from './ui';
 import { cn } from '../utils/cn';
-import { exportAttendanceWorkbook } from '../lib/attendanceExcel';
+import {
+  attendanceRowsFor,
+  exportAttendanceWorkbook,
+  mergeAttendanceRows,
+} from '../lib/attendanceExcel';
+import type { AttendanceWorkbookRow } from '../lib/attendanceExcel';
 
 type Branch = 'SITE' | 'RESTA';
 
 interface Props {
+  account: string;
   salesState: Record<string, SalesState>;
   onToggle: (id: string) => void;
   onFree: (id: string) => void;
@@ -17,11 +24,48 @@ interface Props {
   sales: SalesPerson[];
 }
 
-export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers, sales }: Props) {
+export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, managers, sales }: Props) {
   const toast = useToast();
   const [copyTarget, setCopyTarget] = useState<SalesPerson | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [exporting, setExporting] = useState(false);
+
+  /**
+   * «تحميل Excel الحضور» — ONE combined file for BOTH branches, downloadable
+   * from any of them: everyone who attended at SITE or at RESTA appears once,
+   * with their first check-in of the day. The other branch's attendance lives
+   * on its own devices, so its cloud row is the source of truth and the local
+   * mirror on this device is only the offline fallback.
+   */
+  const exportCombined = async (): Promise<void> => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const roster = { sales, managers, heads };
+      const mine = attendanceRowsFor(roster, salesState);
+      let theirs: AttendanceWorkbookRow[] = [];
+      const other = otherWorkspace(account);
+      if (other) {
+        const local = loadPersisted(other);
+        let otherState = local.salesState;
+        try {
+          const remote = await pullRemote(other, undefined, getSyncConfig(account));
+          if (remote && remote.updatedAt >= (local.updatedAt ?? 0)) {
+            otherState = hydrate(remote.payload as never).salesState;
+          }
+        } catch {
+          /* offline — the local mirror is the best we have */
+        }
+        theirs = attendanceRowsFor(roster, otherState);
+      }
+      const rows = mergeAttendanceRows(mine, theirs);
+      exportAttendanceWorkbook(rows);
+      toast('success', `تم تجهيز ملف الحضور المجمع للفرعين (${rows.length} أفراد)`);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const q = query.trim().toLowerCase();
   const matches = (s: SalesPerson) => !q || s.name.toLowerCase().includes(q);
@@ -72,23 +116,12 @@ export function AttendanceBoard({ salesState, onToggle, onFree, heads, managers,
         </div>
         <button
           type="button"
-          onClick={() => {
-            const rows = sales
-              .filter((person) => salesState[person.id]?.status !== 'absent')
-              .sort((a, b) => (salesState[a.id]?.checkInOrder ?? Number.MAX_SAFE_INTEGER) - (salesState[b.id]?.checkInOrder ?? Number.MAX_SAFE_INTEGER))
-              .map((person) => ({
-                person,
-                manager: managers.find((item) => item.id === person.managerId),
-                head: heads.find((item) => item.id === person.headId),
-                attendance: salesState[person.id],
-              }));
-            exportAttendanceWorkbook(rows);
-            toast('success', `تم تجهيز ملف Excel للحضور (${rows.length} أفراد)`);
-          }}
+          onClick={() => void exportCombined()}
+          disabled={exporting}
           className="btn btn-primary shrink-0"
         >
           <Download className="size-4" />
-          تحميل Excel الحضور
+          {exporting ? 'جارٍ تجهيز الملف…' : 'تحميل Excel الحضور'}
         </button>
       </div>
 
