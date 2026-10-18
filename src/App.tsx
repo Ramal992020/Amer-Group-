@@ -1239,7 +1239,51 @@ function WalkInApp({
   };
 
   // ── Attendance ──
-  const toggleAttendance = (id: string) => {
+  const updateOtherBranchAttendance = async (id: string, branch: 'SITE' | 'RESTA', free: boolean) => {
+    try {
+      const local = loadPersisted(branch);
+      const remote = await pullRemote(branch, undefined, getSyncConfig(account));
+      const base = remote?.payload ? hydrate(remote.payload as never) : hydrate(local as never);
+      const current = base.salesState[id];
+      if (!current) {
+        toast('error', 'تعذر العثور على سجل هذا الشخص في الفرع المختار');
+        return;
+      }
+      if (!free && current.status === 'busy') {
+        toast('info', 'الشخص مشغول مع عميل في هذا الفرع');
+        return;
+      }
+      const order = Math.max(base.counter ?? 0, ...Object.values(base.salesState).map((state) => state.checkInOrder ?? 0)) + 1;
+      const next = {
+        ...base,
+        salesState: {
+          ...base.salesState,
+          [id]: free
+            ? { ...current, status: 'available' as const }
+            : current.status === 'absent'
+              ? { ...current, status: 'available' as const, checkInOrder: order, checkInTime: new Date().toISOString() }
+              : { ...current, status: 'absent' as const, checkInOrder: null, checkInTime: null },
+        },
+        counter: free || current.status !== 'absent' ? base.counter : order,
+      };
+      const stamp = Math.max(syncNow(), (remote?.updatedAt ?? 0) + 1);
+      const result = await pushRemote(branch, { ...next, updatedAt: stamp }, stamp, getSyncConfig(account));
+      if (result !== 'written') {
+        toast('error', 'لم يتم حفظ الحضور في الفرع المختار — تحقق من الاتصال وحاول مجدداً');
+        return;
+      }
+      savePersisted({ ...next, updatedAt: stamp }, branch);
+      toast('success', `تم تحديث حضور الشخص في فرع ${branch}`);
+    } catch {
+      toast('error', 'تعذر الاتصال بحساب الفرع المختار');
+    }
+  };
+
+  const toggleAttendance = (id: string, targetBranch?: 'SITE' | 'RESTA') => {
+    if (targetBranch && targetBranch !== account) {
+      void updateOtherBranchAttendance(id, targetBranch, false);
+      return;
+    }
     const st = salesState[id];
     if (!st || st.status === 'busy') return;
     if (st.status === 'absent') {
@@ -1257,7 +1301,11 @@ function WalkInApp({
     }
   };
 
-  const freeSales = (id: string) => {
+  const freeSales = (id: string, targetBranch?: 'SITE' | 'RESTA') => {
+    if (targetBranch && targetBranch !== account) {
+      void updateOtherBranchAttendance(id, targetBranch, true);
+      return;
+    }
     setSalesState((prev) => ({ ...prev, [id]: { ...prev[id], status: 'available' } }));
   };
 

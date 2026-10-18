@@ -17,8 +17,8 @@ type Branch = 'SITE' | 'RESTA';
 interface Props {
   account: string;
   salesState: Record<string, SalesState>;
-  onToggle: (id: string) => void;
-  onFree: (id: string) => void;
+  onToggle: (id: string, branch?: Branch) => void;
+  onFree: (id: string, branch?: Branch) => void;
   heads: HeadGroup[];
   managers: ManagerTeam[];
   sales: SalesPerson[];
@@ -30,6 +30,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [attendanceBranch, setAttendanceBranch] = useState<Branch>(account === 'RESTA' ? 'RESTA' : 'SITE');
 
   /**
    * «تحميل Excel الحضور» — ONE combined file for BOTH branches, downloadable
@@ -102,6 +103,22 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
 
   return (
     <div className="space-y-4">
+      <div className="surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
+          <p className="mt-1 text-xs font-medium text-ink-400">اختر مكان وجود الشخص؛ سيتم حفظ الحضور في حساب الفرع المختار.</p>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {(['SITE', 'RESTA'] as const).map((branch) => (
+            <button key={branch} type="button" onClick={() => setAttendanceBranch(branch)}
+              aria-pressed={attendanceBranch === branch}
+              className={cn('rounded-xl border px-5 py-2.5 text-sm font-black transition', attendanceBranch === branch ? 'border-brand-600 bg-brand-600 text-white' : 'border-ink-200 bg-white text-ink-600 hover:border-brand-300')}>
+              {branch}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* search */}
       <div className="flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">
@@ -206,7 +223,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                             {/* toggle */}
                             <button
                               type="button"
-                              onClick={() => (busy ? onFree(person.id) : onToggle(person.id))}
+                              onClick={() => (busy ? onFree(person.id, attendanceBranch) : onToggle(person.id, attendanceBranch))}
                               aria-label={present ? `تسجيل انصراف ${person.name}` : `تسجيل حضور ${person.name}`}
                               className={cn(
                                 'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95',
@@ -229,7 +246,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                             {/* name */}
                             <button
                               type="button"
-                              onClick={() => (busy ? onFree(person.id) : onToggle(person.id))}
+                              onClick={() => (busy ? onFree(person.id, attendanceBranch) : onToggle(person.id, attendanceBranch))}
                               className="min-w-0 flex-1 text-right"
                             >
                               <p className="flex items-center gap-1.5 truncate text-[15px] font-extrabold text-ink-900">
@@ -270,7 +287,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
 
                             {busy && (
                               <button
-                                onClick={() => onFree(person.id)}
+                                onClick={() => onFree(person.id, attendanceBranch)}
                                 className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px]"
                               >
                                 إنهاء
