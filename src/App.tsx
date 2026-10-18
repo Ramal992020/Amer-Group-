@@ -54,6 +54,7 @@ import {
   otherWorkspace,
   setActiveAccount,
   formatTime,
+  changeSalesAttendance,
 } from './lib/walkin';
 import {
   applyOrgChart,
@@ -76,6 +77,7 @@ import type {
   TeamCycleSettings,
   TeamTurn,
   UndoEntry,
+  AttendanceAction,
 } from './lib/walkin';
 import { LoginScreen } from './components/LoginScreen';
 import { WorkspaceGate } from './components/WorkspaceGate';
@@ -138,6 +140,18 @@ const defaultVisitFor = (account: string): BranchVisit =>
   account.trim().toUpperCase() === 'RESTA' ? 'resta' : 'site';
 
 type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
+type Branch = 'SITE' | 'RESTA';
+
+const asBranch = (value: string | null | undefined): Branch | null => {
+  const branch = value?.trim().toUpperCase();
+  return branch === 'SITE' || branch === 'RESTA' ? branch : null;
+};
+
+type RemoteAttendanceResult =
+  | { kind: 'ok'; state: PersistedWalkin; updatedAt: number; changed: boolean }
+  | { kind: 'busy' }
+  | { kind: 'missing' }
+  | { kind: 'failed' };
 
 // ─── Sync timings ───
 /** How often we look for other devices' edits while the app is on screen. */
@@ -339,6 +353,8 @@ function WalkInApp({
   const isDirty = (): boolean => dirtySeqRef.current !== syncedSeqRef.current;
   // One upload at a time (mobile networks hate parallel writes).
   const pushingRef = useRef(false);
+  /** A two-branch attendance move owns both rows until it finishes. */
+  const branchAttendanceInFlightRef = useRef(false);
   // Consecutive failed uploads / reconnect attempts.
   const pushFailuresRef = useRef(0);
   const syncAttemptsRef = useRef(0);
@@ -668,7 +684,7 @@ function WalkInApp({
    *  - 'failed'  → stay dirty so the next tick / foreground retries it
    */
   const flushPush = useCallback(async (): Promise<void> => {
-    if (!syncReadyRef.current || pushingRef.current) return;
+    if (!syncReadyRef.current || pushingRef.current || branchAttendanceInFlightRef.current) return;
     pushingRef.current = true;
     const previousRevision = revisionRef.current;
     const sentSeq = dirtySeqRef.current;
@@ -1239,74 +1255,205 @@ function WalkInApp({
   };
 
   // ── Attendance ──
-  const updateOtherBranchAttendance = async (id: string, branch: 'SITE' | 'RESTA', free: boolean) => {
-    try {
-      const local = loadPersisted(branch);
-      const remote = await pullRemote(branch, undefined, getSyncConfig(account));
-      const base = remote?.payload ? hydrate(remote.payload as never) : hydrate(local as never);
-      const current = base.salesState[id];
-      if (!current) {
-        toast('error', 'تعذر العثور على سجل هذا الشخص في الفرع المختار');
-        return;
+  /** Read a branch row, creating it from its local mirror when this is its first cloud write. */
+  const readBranchSnapshot = async (branch: Branch): Promise<PersistedWalkin | null> => {
+    const remote = await pullRemote(branch, loadPersisted(branch), getSyncConfig(account));
+    if (!remote) return null;
+    return hydrate({ ...(remote.payload as Partial<PersistedWalkin>), updatedAt: remote.updatedAt });
+  };
+
+  /**
+   * Change one attendance row directly in its selected branch account. A stale
+   * response is retried once from the newest cloud copy, so tapping SITE/RESTA
+   * cannot overwrite somebody else's attendance on that branch.
+   */
+  const writeBranchAttendance = async (
+    branch: Branch,
+    id: string,
+    action: AttendanceAction,
+  ): Promise<RemoteAttendanceResult> => {
+    const config = getSyncConfig(account);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const remote = await pullRemote(branch, loadPersisted(branch), config);
+      if (!remote) return { kind: 'failed' };
+
+      const base = hydrate({ ...(remote.payload as Partial<PersistedWalkin>), updatedAt: remote.updatedAt });
+      const change = changeSalesAttendance(base.salesState, base.counter, id, action);
+      if (change.reason === 'busy') return { kind: 'busy' };
+      if (change.reason === 'missing') return { kind: 'missing' };
+      if (!change.changed) {
+        return { kind: 'ok', state: base, updatedAt: remote.updatedAt, changed: false };
       }
-      if (!free && current.status === 'busy') {
-        toast('info', 'الشخص مشغول مع عميل في هذا الفرع');
-        return;
-      }
-      const order = Math.max(base.counter ?? 0, ...Object.values(base.salesState).map((state) => state.checkInOrder ?? 0)) + 1;
-      const next = {
+
+      const stamp = Math.max(syncNow(), remote.updatedAt + 1, (base.updatedAt ?? 0) + 1);
+      const next: PersistedWalkin = {
         ...base,
-        salesState: {
-          ...base.salesState,
-          [id]: free
-            ? { ...current, status: 'available' as const }
-            : current.status === 'absent'
-              ? { ...current, status: 'available' as const, checkInOrder: order, checkInTime: new Date().toISOString() }
-              : { ...current, status: 'absent' as const, checkInOrder: null, checkInTime: null },
-        },
-        counter: free || current.status !== 'absent' ? base.counter : order,
+        salesState: change.salesState,
+        counter: change.counter,
+        updatedAt: stamp,
       };
-      const stamp = Math.max(syncNow(), (remote?.updatedAt ?? 0) + 1);
-      const result = await pushRemote(branch, { ...next, updatedAt: stamp }, stamp, getSyncConfig(account));
-      if (result !== 'written') {
+      const result = await pushRemote(branch, next, stamp, config);
+      if (result === 'written') {
+        savePersisted(next, branch);
+        return { kind: 'ok', state: next, updatedAt: stamp, changed: true };
+      }
+      if (result !== 'stale') return { kind: 'failed' };
+    }
+    return { kind: 'failed' };
+  };
+
+  /** Apply a non-transfer action to the account currently open on this device. */
+  const changeLocalAttendance = (id: string, action: AttendanceAction): void => {
+    const change = changeSalesAttendance(salesState, counter, id, action);
+    if (change.reason === 'busy') {
+      toast('warning', 'الشخص مشغول مع عميل الآن');
+      return;
+    }
+    if (!change.changed) return;
+    setCounter(change.counter);
+    setSalesState(change.salesState);
+  };
+
+  /**
+   * Register a person in exactly one branch.
+   *
+   * The destination is written first (so a network problem never makes a
+   * present person disappear), then their attendance is cleared from the other
+   * branch. The active screen adopts its changed row immediately, and the toast
+   * explicitly confirms when the selected destination is the other account.
+   */
+  const registerAttendanceInBranch = async (id: string, targetBranch: Branch): Promise<void> => {
+    const person = sales.find((item) => item.id === id);
+    const currentBranch = asBranch(account);
+    if (!person || !currentBranch) {
+      toast('error', 'تعذر العثور على سجل هذا الشخص');
+      return;
+    }
+    if (!syncReadyRef.current) {
+      toast('info', 'انتظر اكتمال المزامنة قبل تسجيل الحضور بين الفرعين');
+      return;
+    }
+    if (branchAttendanceInFlightRef.current || pushingRef.current) {
+      toast('info', 'جارٍ حفظ تعديل آخر، حاول بعد لحظات');
+      return;
+    }
+
+    // Do not compose a branch move over an unsent local snapshot: flush it
+    // first, otherwise a delayed normal upload could restore old attendance.
+    if (isDirty()) {
+      await flushPushRef.current();
+      if (isDirty()) {
+        toast('info', 'جارٍ مزامنة آخر تعديل، أعد المحاولة بعد لحظات');
+        return;
+      }
+    }
+
+    branchAttendanceInFlightRef.current = true;
+    try {
+      const otherBranch = asBranch(otherWorkspace(targetBranch));
+
+      // A person serving a client cannot be moved. Checking before the target
+      // write avoids creating duplicate attendance when the other branch is busy.
+      if (otherBranch) {
+        const otherBefore = await readBranchSnapshot(otherBranch);
+        if (!otherBefore) {
+          toast('error', 'تعذر قراءة حساب الفرع الآخر — تحقق من الاتصال وحاول مجدداً');
+          return;
+        }
+        if (otherBefore.salesState[id]?.status === 'busy') {
+          toast('warning', `${person.name} مشغول مع عميل في فرع ${otherBranch}`);
+          return;
+        }
+      }
+
+      const target = await writeBranchAttendance(targetBranch, id, 'check-in');
+      if (target.kind === 'busy') {
+        toast('warning', `${person.name} مشغول مع عميل في فرع ${targetBranch}`);
+        return;
+      }
+      if (target.kind === 'missing') {
+        toast('error', 'سجل الشخص لم يصل إلى الفرع المختار بعد — حدّث الهيكل ثم أعد المحاولة');
+        return;
+      }
+      if (target.kind === 'failed') {
         toast('error', 'لم يتم حفظ الحضور في الفرع المختار — تحقق من الاتصال وحاول مجدداً');
         return;
       }
-      savePersisted({ ...next, updatedAt: stamp }, branch);
-      toast('success', `تم تحديث حضور الشخص في فرع ${branch}`);
+
+      // If this is the open account, reflect the successful check-in at once.
+      if (targetBranch === currentBranch) {
+        applyRemote({ ...target.state, updatedAt: target.updatedAt } as Record<string, unknown>);
+      }
+
+      let clearedOther = false;
+      if (otherBranch) {
+        const source = await writeBranchAttendance(otherBranch, id, 'check-out');
+        if (source.kind === 'busy') {
+          toast('warning', `تم تسجيل ${person.name} في ${targetBranch}، لكن لا يمكن إلغاء حضوره من ${otherBranch} لأنه مشغول`);
+          return;
+        }
+        if (source.kind === 'failed') {
+          toast('warning', `تم تسجيل ${person.name} في ${targetBranch}، لكن تعذر إلغاء حضوره من ${otherBranch}`);
+          return;
+        }
+        // `missing` here means an old branch snapshot had no such roster row;
+        // there is no attendance to remove, so the selected branch is already
+        // the only place that can count this person.
+        if (source.kind === 'ok') {
+          clearedOther = source.changed;
+          if (otherBranch === currentBranch) {
+            applyRemote({ ...source.state, updatedAt: source.updatedAt } as Record<string, unknown>);
+          }
+        }
+      }
+
+      setSyncStatus('synced');
+      setLastSyncAt(Date.now());
+      if (!target.changed && !clearedOther) {
+        toast('info', `${person.name} مسجل بالفعل في فرع ${targetBranch}`);
+      } else if (targetBranch !== currentBranch) {
+        toast('success', `تم تسجيل ${person.name} في الفرع الآخر (${targetBranch})`);
+      } else {
+        toast('success', `تم تثبيت حضور ${person.name} في فرع ${targetBranch} فقط`);
+      }
     } catch {
       toast('error', 'تعذر الاتصال بحساب الفرع المختار');
+    } finally {
+      branchAttendanceInFlightRef.current = false;
     }
   };
 
-  const toggleAttendance = (id: string, targetBranch?: 'SITE' | 'RESTA') => {
-    if (targetBranch && targetBranch !== account) {
-      void updateOtherBranchAttendance(id, targetBranch, false);
+  const toggleAttendance = async (id: string, targetBranch?: Branch): Promise<void> => {
+    const selectedBranch = targetBranch ?? asBranch(account);
+    const currentBranch = asBranch(account);
+    const state = salesState[id];
+    if (!selectedBranch || !currentBranch || !state) return;
+
+    // Tapping a person already present in the open branch keeps the familiar
+    // «انصراف» behavior. Selecting the other branch always means «move/check in»
+    // instead — it must never toggle the other branch back to absent.
+    if (selectedBranch === currentBranch && state.status === 'available') {
+      changeLocalAttendance(id, 'check-out');
       return;
     }
-    const st = salesState[id];
-    if (!st || st.status === 'busy') return;
-    if (st.status === 'absent') {
-      const order = counter + 1;
-      setCounter(order);
-      setSalesState((prev) => ({
-        ...prev,
-        [id]: { ...prev[id], status: 'available', checkInOrder: order, checkInTime: new Date().toISOString() },
-      }));
-    } else {
-      setSalesState((prev) => ({
-        ...prev,
-        [id]: { ...prev[id], status: 'absent', checkInOrder: null, checkInTime: null },
-      }));
+    if (selectedBranch === currentBranch && state.status === 'busy') {
+      toast('warning', 'أنهِ مقابلة العميل أولاً');
+      return;
     }
+    await registerAttendanceInBranch(id, selectedBranch);
   };
 
-  const freeSales = (id: string, targetBranch?: 'SITE' | 'RESTA') => {
-    if (targetBranch && targetBranch !== account) {
-      void updateOtherBranchAttendance(id, targetBranch, true);
+  const freeSales = async (id: string, targetBranch?: Branch): Promise<void> => {
+    const selectedBranch = targetBranch ?? asBranch(account);
+    const currentBranch = asBranch(account);
+    if (!selectedBranch || !currentBranch) return;
+    // With a different selected branch this is a requested move, not «إنهاء»
+    // for the current branch. The transfer guard rejects a person who is busy.
+    if (selectedBranch !== currentBranch) {
+      await registerAttendanceInBranch(id, selectedBranch);
       return;
     }
-    setSalesState((prev) => ({ ...prev, [id]: { ...prev[id], status: 'available' } }));
+    changeLocalAttendance(id, 'free');
   };
 
   // ── Assignment ──

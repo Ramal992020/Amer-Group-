@@ -7,6 +7,7 @@ import {
   SALES,
   availableTeamMembers,
   canAdoptRemoteOrg,
+  changeSalesAttendance,
   carryOverForNewDay,
   computeNextTeam,
   computeNextTurn,
@@ -1282,4 +1283,76 @@ test('a same-revision remote roster is ignored while this device has an unpublis
   assert.equal(canAdoptRemoteOrg(6, 6, true), false);
   // An older remote row never wins.
   assert.equal(canAdoptRemoteOrg(5, 6, false), false);
+});
+
+// ───────────── Branch-only attendance registration ─────────────
+
+test('a branch transfer leaves the person present only in the chosen branch', () => {
+  const absent = (order: number | null = null): SalesState => ({
+    status: 'absent',
+    checkInOrder: order,
+    checkInTime: null,
+    walkCount: 0,
+    coverCount: 0,
+    lastServedAt: null,
+  });
+  const site: Record<string, SalesState> = {
+    manar: {
+      ...absent(3),
+      status: 'available',
+      checkInTime: '2026-10-18T08:30:00.000Z',
+    },
+    sara: {
+      ...absent(7),
+      status: 'available',
+      checkInTime: '2026-10-18T08:45:00.000Z',
+    },
+  };
+  const resta: Record<string, SalesState> = { manar: absent(), sara: absent() };
+
+  // The production flow writes the destination first, then clears the source.
+  const inResta = changeSalesAttendance(resta, 0, 'manar', 'check-in', '2026-10-18T09:00:00.000Z');
+  const outOfSite = changeSalesAttendance(site, 7, 'manar', 'check-out');
+
+  assert.equal(inResta.changed, true);
+  assert.equal(inResta.salesState.manar.status, 'available');
+  assert.equal(inResta.salesState.manar.checkInOrder, 1);
+  assert.equal(outOfSite.changed, true);
+  assert.equal(outOfSite.salesState.manar.status, 'absent');
+  assert.equal(outOfSite.salesState.manar.checkInOrder, null);
+  assert.equal(outOfSite.salesState.manar.checkInTime, null);
+  // Other people's check-in order and attendance are untouched.
+  assert.equal(outOfSite.salesState.sara.status, 'available');
+  assert.equal(outOfSite.salesState.sara.checkInOrder, 7);
+});
+
+test('branch check-in is idempotent and a busy person cannot be moved', () => {
+  const state: Record<string, SalesState> = {
+    dina: {
+      status: 'available',
+      checkInOrder: 4,
+      checkInTime: '2026-10-18T08:05:00.000Z',
+      walkCount: 0,
+      coverCount: 0,
+      lastServedAt: null,
+    },
+    hany: {
+      status: 'busy',
+      checkInOrder: 5,
+      checkInTime: '2026-10-18T08:10:00.000Z',
+      walkCount: 1,
+      coverCount: 0,
+      lastServedAt: null,
+    },
+  };
+
+  const again = changeSalesAttendance(state, 5, 'dina', 'check-in', '2026-10-18T09:00:00.000Z');
+  assert.equal(again.changed, false);
+  assert.equal(again.counter, 5);
+  assert.equal(again.salesState.dina.checkInTime, '2026-10-18T08:05:00.000Z');
+
+  const busyMove = changeSalesAttendance(state, 5, 'hany', 'check-out');
+  assert.equal(busyMove.changed, false);
+  assert.equal(busyMove.reason, 'busy');
+  assert.equal(busyMove.salesState.hany.status, 'busy');
 });

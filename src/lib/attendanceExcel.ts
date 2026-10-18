@@ -189,11 +189,10 @@ const checkInMs = (row: AttendanceWorkbookRow): number | null => {
 };
 
 /**
- * Merge the attendance rows of the branches (SITE + RESTA) into ONE list for
- * the combined file: one row per person, carrying their **first** check-in of
- * the day — a person who started at SITE and moved to RESTA after noon appears
- * once, with the morning time. The result is sorted by that first arrival, so
- * the sheet reads in check-in order across both branches.
+ * Merge the attendance rows of SITE + RESTA into ONE list for the combined
+ * file. The current attendance flow keeps each person in one selected branch
+ * only. The first-check-in rule remains as a safe migration fallback for old
+ * data that may still contain the same person in both branch rows.
  */
 export const mergeAttendanceRows = (...groups: AttendanceWorkbookRow[][]): AttendanceWorkbookRow[] => {
   const byPerson = new Map<string, AttendanceWorkbookRow>();
