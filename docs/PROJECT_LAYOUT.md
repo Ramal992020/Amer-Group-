@@ -55,6 +55,19 @@ The workbook is built by `createAttendanceWorkbook()` in
   (#C00000), then a 39-row canvas.
 * **Every cell is bold and the data rows are pure white** — the old grey fill
   (#BFBFBF) has been removed on purpose; only the two header rows keep a fill.
+* **One font size for the whole sheet: Arial 20** (`FONT_SIZE` in
+  `attendanceExcel.ts`) — the title row, the red header row and every data row
+  carry the same size, so a name is readable without zooming. Excel sizes fonts
+  in points; 20 pt is what the font box shows (≈ 27 px on screen — a literal 20
+  px would be `FONT_SIZE = 15`).
+* **Rows and columns are AutoFitted to that text** by `autoFitColumns()` /
+  `autoFitRows()`: a column's width is measured from its widest cell using
+  Arial's own glyph advances (`textWidthPx()`, with a fallback for Arabic) and
+  converted to Excel's width unit (`wch = (px − 5) / 7`), and every row is one
+  fitted line high (`hpt ≈ 1.3 × the font size` → 26 pt at size 20). No
+  hard-coded column widths are left, so a longer name simply widens its column.
+  The merged `Sales Team` title is excluded from the measurement — it rides all
+  six columns and must not stretch column A.
 * **Manager numbers live in the normal `Mobile Number` column**, on the
   manager's own attendance row — exactly like a sales number, so nothing about
   the sheet layout changes. They are edited from «الهيكل»: the manager appears
