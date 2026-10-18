@@ -25,7 +25,7 @@ test('attendance workbook uses the requested six headers and data columns', () =
   assert.deepEqual(exportedRows.slice(0, 3), [
     ['Sales Team', '', '', '', '', ''],
     ['sales', 'Director', 'Head', 'Shift time', 'time in', 'Mobile Number'],
-    ['Sam Sales', 'Sayed Magdy', 'Khaled Youssef', '10:00', '08:25', '01000000000'],
+    ['Sam Sales', 'Sayed Magdy', 'Khaled Youssef', '10:00', '08:25 AM', '01000000000'],
   ]);
   assert.equal(sheet['!ref'], 'A1:F39');
   assert.equal(sheet['!merges']?.[0].e.c, 5);
