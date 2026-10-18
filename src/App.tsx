@@ -1822,6 +1822,7 @@ function WalkInApp({
                   </div>
                 ) : (
                   <AttendanceBoard
+                    account={account}
                     salesState={salesState}
                     onToggle={toggleAttendance}
                     onFree={freeSales}

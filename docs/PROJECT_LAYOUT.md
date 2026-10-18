@@ -39,6 +39,7 @@ grep -o "الفرع الآخر" dist/index.html                # shared roster (
 grep -o "يظهر في الفرعين SITE و RESTA" dist/index.html # «إضافة عضو جديد» subtitle
 grep -o "Shifted ❌" dist/index.html                  # receipt line for a passed-over team
 grep -o "تم حفظ الدورة وتثبيتها" dist/index.html       # toast after saving the turn order
+grep -o "الحضور المجمع" dist/index.html           # combined SITE+RESTA attendance file
 grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1/ root
                                                     # check is what killed sync
 ```
@@ -61,6 +62,17 @@ The workbook is built by `createAttendanceWorkbook()` in
   person (name + number + shift), and the pencil next to the team name can set
   the number too. `ManagerTeam.phone` mirrors the number so it rides the shared
   roster (SITE ⇄ RESTA) and `mobileFor()` falls back to it for older rows.
+* **One combined file for BOTH branches.** «تحميل Excel الحضور» merges the
+  attendance of SITE and RESTA into ONE sheet, downloadable from either branch:
+  `attendanceRowsFor()` builds one branch's attendee rows and
+  `mergeAttendanceRows()` (both in `src/lib/attendanceExcel.ts`) keeps **one
+  row per person at their FIRST check-in of the day**, sorted by that first
+  arrival. The other branch's attendance is read from its cloud row
+  (`pullRemote(otherWorkspace(account))`) and falls back to that branch's local
+  mirror (`loadPersisted(other)`) when offline — never the other way round,
+  since the other branch registers its attendance on its own devices. A person
+  who attended at both branches the same day appears once (morning time), and
+  no column marks the branch: the template stays six columns.
 
 Grepping the build for `Manager Number` must return **0** and `BFBFBF` must be
 absent from the sheet styling.

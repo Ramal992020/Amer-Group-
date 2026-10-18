@@ -150,3 +150,73 @@ export const exportAttendanceWorkbook = (rows: AttendanceWorkbookRow[], date = n
   const day = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
   XLSX.writeFile(createAttendanceWorkbook(rows), `Sales-Team-Attendance-${day}.xlsx`);
 };
+
+export interface AttendanceRoster {
+  sales: SalesPerson[];
+  managers: ManagerTeam[];
+  heads: HeadGroup[];
+}
+
+/**
+ * The rows of ONE branch: everyone who attended (anything but «لم يحضر»),
+ * in that branch's check-in order. The roster is the shared one (SITE ⇄ RESTA
+ * have the same people), so the same builder works for either branch's map.
+ */
+export const attendanceRowsFor = (
+  roster: AttendanceRoster,
+  salesState: Record<string, SalesState>,
+): AttendanceWorkbookRow[] =>
+  roster.sales
+    .filter((person) => salesState[person.id]?.status !== 'absent')
+    .sort(
+      (a, b) =>
+        (salesState[a.id]?.checkInOrder ?? Number.MAX_SAFE_INTEGER) -
+        (salesState[b.id]?.checkInOrder ?? Number.MAX_SAFE_INTEGER),
+    )
+    .map((person) => ({
+      person,
+      manager: roster.managers.find((item) => item.id === person.managerId),
+      head: roster.heads.find((item) => item.id === person.headId),
+      attendance: salesState[person.id],
+    }));
+
+/** The instant a row's person checked in (ms), or null when unknown. */
+const checkInMs = (row: AttendanceWorkbookRow): number | null => {
+  const raw = row.attendance?.checkInTime;
+  if (!raw) return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+};
+
+/**
+ * Merge the attendance rows of the branches (SITE + RESTA) into ONE list for
+ * the combined file: one row per person, carrying their **first** check-in of
+ * the day — a person who started at SITE and moved to RESTA after noon appears
+ * once, with the morning time. The result is sorted by that first arrival, so
+ * the sheet reads in check-in order across both branches.
+ */
+export const mergeAttendanceRows = (...groups: AttendanceWorkbookRow[][]): AttendanceWorkbookRow[] => {
+  const byPerson = new Map<string, AttendanceWorkbookRow>();
+  for (const group of groups) {
+    for (const row of group) {
+      const current = byPerson.get(row.person.id);
+      if (!current) {
+        byPerson.set(row.person.id, row);
+        continue;
+      }
+      // A timed check-in beats an untimed one; between two times the earlier
+      // (first arrival of the day) wins. Ties keep the row already held.
+      const currentMs = checkInMs(current);
+      const rowMs = checkInMs(row);
+      if (currentMs === null && rowMs !== null) byPerson.set(row.person.id, row);
+      else if (currentMs !== null && rowMs !== null && rowMs < currentMs) byPerson.set(row.person.id, row);
+    }
+  }
+  return [...byPerson.values()].sort((a, b) => {
+    // Never subtract the timestamps: `Infinity - Infinity` is NaN and breaks
+    // the sort for the two rows that carry no time at all.
+    const aMs = checkInMs(a) ?? Number.POSITIVE_INFINITY;
+    const bMs = checkInMs(b) ?? Number.POSITIVE_INFINITY;
+    return aMs < bMs ? -1 : aMs > bMs ? 1 : 0;
+  });
+};
