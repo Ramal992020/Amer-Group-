@@ -3,10 +3,14 @@ import assert from 'node:assert/strict';
 import XLSX from 'xlsx-js-style';
 import {
   attendanceRowsFor,
+  autoFitColumns,
+  autoFitRows,
+  autoRowHeight,
   createAttendanceWorkbook,
   directorFor,
   mergeAttendanceRows,
   mobileFor,
+  textWidthPx,
 } from './attendanceExcel.ts';
 import type { AttendanceRoster, AttendanceWorkbookRow } from './attendanceExcel.ts';
 import type { SalesPerson, SalesState } from './walkin.ts';
@@ -40,6 +44,82 @@ test('attendance workbook uses the requested six headers and data columns', () =
   // The blank rows of the 39-row canvas are styled the same way (white + bold).
   assert.equal(sheet.A12.s.fill.fgColor.rgb, 'FFFFFF');
   assert.equal(sheet.A12.s.font.bold, true);
+});
+
+// ─── Arial 20 + AutoFit ───
+
+const HEADERS = ['sales', 'Director', 'Head', 'Shift time', 'time in', 'Mobile Number'];
+
+test('the whole sheet is Arial 20 — title, red header row and data rows alike', () => {
+  const sheet = createAttendanceWorkbook(sample).Sheets['Sales Team'];
+  for (const address of ['A1', 'A2', 'F2', 'A3', 'F3', 'C12']) {
+    assert.equal(sheet[address].s.font.sz, 20, `${address} keeps the sheet font size`);
+    assert.equal(sheet[address].s.font.name, 'Arial', `${address} keeps the sheet font`);
+  }
+});
+
+test('rows and columns are AutoFitted to that text', () => {
+  const sheet = createAttendanceWorkbook(sample).Sheets['Sales Team'];
+  const cols = sheet['!cols'] ?? [];
+  const rows = sheet['!rows'] ?? [];
+
+  // Rows: one fitted height (≈ 1.3 × the font size) for every row of the canvas.
+  assert.equal(rows.length, 39);
+  assert.deepEqual([...new Set(rows.map((row) => row.hpt))], [autoRowHeight(20)]);
+  assert.equal(autoRowHeight(20), 26);
+
+  // Columns: six fitted widths, no leftover of the old hard-coded template sizes.
+  assert.equal(cols.length, 6);
+  assert.ok(cols.every((col) => typeof col.wch === 'number' && col.wch > 0));
+
+  // Every column is wide enough for its own text: Excel renders a `wch` column
+  // as `wch × 7 + 5` pixels, which must cover the measured text plus padding.
+  HEADERS.forEach((header, c) => {
+    const px = (cols[c].wch ?? 0) * 7 + 5;
+    assert.ok(px >= textWidthPx(header), `${header} fits its column`);
+  });
+  const dataRow = ['Sam Sales', 'Sayed Magdy', 'Khaled Youssef', '10:00', '08:25 AM', '01000000000'];
+  dataRow.forEach((value, c) => {
+    const px = (cols[c].wch ?? 0) * 7 + 5;
+    assert.ok(px >= textWidthPx(value), `${value} fits its column`);
+  });
+});
+
+test('the fit follows the text: a longer name widens the column, the merged title does not', () => {
+  const short = createAttendanceWorkbook(sample).Sheets['Sales Team']['!cols'] ?? [];
+  const longName = 'Abdelrahman Elshenawy';
+  const long = createAttendanceWorkbook([
+    { ...sample[0], person: { ...sample[0].person, name: longName } },
+  ]).Sheets['Sales Team']['!cols'] ?? [];
+  assert.ok((long[0].wch ?? 0) > (short[0].wch ?? 0), 'column A grows with the name');
+  assert.ok((long[0].wch ?? 0) * 7 + 5 >= textWidthPx(longName), 'and it fully covers it');
+  // The other columns do not move — only the one carrying the longer text does.
+  assert.equal(long[5].wch, short[5].wch);
+
+  // The merged «Sales Team» title rides all six columns, so it never stretches A.
+  const fitted = autoFitColumns([['Sales Team'], HEADERS]);
+  const longTitle = autoFitColumns([['Sales Team Of The Whole Company'], HEADERS]);
+  assert.equal(fitted[0].wch, longTitle[0].wch);
+  assert.ok((fitted[0].wch ?? 0) < 15, 'column A is fitted by «sales», not by the title');
+});
+
+test('AutoFit keeps a floor for empty columns and measures digits like Excel does', () => {
+  const withBlanks = autoFitColumns([['Sales Team'], ['sales', '', '', '', '', '']]);
+  assert.equal(withBlanks.length, 6);
+  assert.ok(withBlanks[1].wch! < withBlanks[0].wch!, 'an empty column stays at the minimum');
+  assert.ok(withBlanks[1].wch! >= 9, 'and never collapses below Excel’s default width');
+
+  // A phone number of tabular digits is exactly 11 × the width of one digit,
+  // at the sheet's 20-point size (points → pixels is ×96/72, bold is ×1.04).
+  assert.equal(
+    textWidthPx('01000000000'),
+    Math.ceil(((556 * 11) / 1000) * ((20 * 96) / 72) * 1.04),
+  );
+  assert.equal(textWidthPx('0'), Math.ceil((556 / 1000) * ((20 * 96) / 72) * 1.04));
+  assert.ok(textWidthPx('01000000000') > textWidthPx('10:00'));
+  // Arabic text is measured too (a fallback advance per letter, never zero).
+  assert.ok(textWidthPx('خالد يوسف') > 0);
+  assert.deepEqual(autoFitRows(3), [{ hpt: 26 }, { hpt: 26 }, { hpt: 26 }]);
 });
 
 test('directors resolve by stable team id, known team name, then head fallback', () => {
