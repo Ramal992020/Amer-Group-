@@ -178,6 +178,89 @@ export const defaultSalesState = (salesList: SalesPerson[] = SALES): Record<stri
   return map;
 };
 
+/** A small, explicit attendance mutation used by the branch-registration flow. */
+export type AttendanceAction = 'check-in' | 'check-out' | 'free';
+
+export interface AttendanceChange {
+  salesState: Record<string, SalesState>;
+  counter: number;
+  changed: boolean;
+  /** `busy` means the person must finish their current client before moving branch. */
+  reason?: 'busy' | 'missing';
+}
+
+/**
+ * Apply one attendance action without mutating the current branch state.
+ *
+ * `check-in` is deliberately idempotent: selecting a branch twice must never
+ * turn a person back to absent or give them a new check-in order. This matters
+ * when a manager registers somebody in the other branch and taps again while
+ * waiting for the simple confirmation toast.
+ */
+export function changeSalesAttendance(
+  salesState: Record<string, SalesState>,
+  counter: number,
+  salesId: string,
+  action: AttendanceAction,
+  at = new Date().toISOString(),
+): AttendanceChange {
+  const current = salesState[salesId];
+  // A missing row means there is nothing to clear in an older branch snapshot,
+  // but a person cannot be checked in there until the shared roster arrives.
+  if (!current) {
+    return {
+      salesState,
+      counter,
+      changed: false,
+      ...(action === 'check-in' ? { reason: 'missing' as const } : {}),
+    };
+  }
+
+  if (action === 'check-in') {
+    if (current.status === 'busy') return { salesState, counter, changed: false, reason: 'busy' };
+    if (current.status === 'available') return { salesState, counter, changed: false };
+    const lastOrder = Object.values(salesState).reduce(
+      (max, state) => Math.max(max, state.checkInOrder ?? 0),
+      counter,
+    );
+    const nextCounter = lastOrder + 1;
+    return {
+      salesState: {
+        ...salesState,
+        [salesId]: {
+          ...current,
+          status: 'available',
+          checkInOrder: nextCounter,
+          checkInTime: at,
+        },
+      },
+      counter: nextCounter,
+      changed: true,
+    };
+  }
+
+  if (action === 'check-out') {
+    if (current.status === 'busy') return { salesState, counter, changed: false, reason: 'busy' };
+    if (current.status === 'absent') return { salesState, counter, changed: false };
+    return {
+      salesState: {
+        ...salesState,
+        [salesId]: { ...current, status: 'absent', checkInOrder: null, checkInTime: null },
+      },
+      counter,
+      changed: true,
+    };
+  }
+
+  // «free» only ends an active client meeting; it never changes check-in data.
+  if (current.status !== 'busy') return { salesState, counter, changed: false };
+  return {
+    salesState: { ...salesState, [salesId]: { ...current, status: 'available' } },
+    counter,
+    changed: true,
+  };
+}
+
 /**
  * Rebuild queue counters from history (the source of truth):
  * - walkCount  = own turns served (substituted === false) → drives queue fairness

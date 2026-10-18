@@ -66,13 +66,15 @@ The workbook is built by `createAttendanceWorkbook()` in
   attendance of SITE and RESTA into ONE sheet, downloadable from either branch:
   `attendanceRowsFor()` builds one branch's attendee rows and
   `mergeAttendanceRows()` (both in `src/lib/attendanceExcel.ts`) keeps **one
-  row per person at their FIRST check-in of the day**, sorted by that first
-  arrival. The other branch's attendance is read from its cloud row
-  (`pullRemote(otherWorkspace(account))`) and falls back to that branch's local
-  mirror (`loadPersisted(other)`) when offline — never the other way round,
-  since the other branch registers its attendance on its own devices. A person
-  who attended at both branches the same day appears once (morning time), and
-  no column marks the branch: the template stays six columns.
+  row per person**. On the attendance screen the manager selects SITE or RESTA
+  before tapping a person; the app writes that person to the selected account
+  and clears their attendance from the other account, then shows a short
+  confirmation if the selected branch is the other one. The other branch's
+  attendance is read from its cloud row (`pullRemote(otherWorkspace(account))`)
+  and falls back to that branch's local mirror (`loadPersisted(other)`) when
+  offline. The first-check-in rule is retained only to de-duplicate any legacy
+  rows that were recorded in both branches before this flow; no column marks
+  the branch, so the template stays six columns.
 
 Grepping the build for `Manager Number` must return **0** and `BFBFBF` must be
 absent from the sheet styling.

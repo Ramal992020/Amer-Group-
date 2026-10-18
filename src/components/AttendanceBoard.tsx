@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download } from 'lucide-react';
+import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2 } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from '../lib/walkin';
 import { formatTime, hydrate, loadPersisted, otherWorkspace } from '../lib/walkin';
 import { getSyncConfig, pullRemote } from '../lib/sync';
@@ -17,8 +17,8 @@ type Branch = 'SITE' | 'RESTA';
 interface Props {
   account: string;
   salesState: Record<string, SalesState>;
-  onToggle: (id: string, branch?: Branch) => void;
-  onFree: (id: string, branch?: Branch) => void;
+  onToggle: (id: string, branch?: Branch) => void | Promise<void>;
+  onFree: (id: string, branch?: Branch) => void | Promise<void>;
   heads: HeadGroup[];
   managers: ManagerTeam[];
   sales: SalesPerson[];
@@ -30,14 +30,16 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [exporting, setExporting] = useState(false);
-  const [attendanceBranch, setAttendanceBranch] = useState<Branch>(account === 'RESTA' ? 'RESTA' : 'SITE');
+  const currentBranch: Branch = account.trim().toUpperCase() === 'RESTA' ? 'RESTA' : 'SITE';
+  const [attendanceBranch, setAttendanceBranch] = useState<Branch>(currentBranch);
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   /**
    * «تحميل Excel الحضور» — ONE combined file for BOTH branches, downloadable
-   * from any of them: everyone who attended at SITE or at RESTA appears once,
-   * with their first check-in of the day. The other branch's attendance lives
-   * on its own devices, so its cloud row is the source of truth and the local
-   * mirror on this device is only the offline fallback.
+   * from any of them. Normal registration now keeps an attendee in the selected
+   * branch only; the merge still de-duplicates any legacy/older duplicate row
+   * by keeping the first check-in of the day. The other branch's cloud row is
+   * the source of truth and the local mirror is only the offline fallback.
    */
   const exportCombined = async (): Promise<void> => {
     if (exporting) return;
@@ -99,6 +101,19 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
     setTimeout(() => setCopiedId((cur) => (cur === person.id ? null : cur)), 1800);
   };
 
+  const runAttendanceAction = async (
+    person: SalesPerson,
+    action: (id: string, branch: Branch) => void | Promise<void>,
+  ): Promise<void> => {
+    if (savingId) return;
+    setSavingId(person.id);
+    try {
+      await action(person.id, attendanceBranch);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
   const totalVisible = sales.filter(matches).length;
 
   return (
@@ -106,13 +121,30 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
       <div className="surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
-          <p className="mt-1 text-xs font-medium text-ink-400">اختر مكان وجود الشخص؛ سيتم حفظ الحضور في حساب الفرع المختار.</p>
+          <p className="mt-1 text-xs font-medium text-ink-400">
+            اختر مكان وجود الشخص ثم اضغط اسمه؛ سيُثبت حضوره في حساب الفرع المختار فقط.
+          </p>
+          <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
+            <MapPin className="size-3.5" />
+            الاختيار الحالي: {attendanceBranch}
+            {attendanceBranch !== currentBranch && ' · سيظهر تأكيد أنه سُجّل في الفرع الآخر'}
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-2">
           {(['SITE', 'RESTA'] as const).map((branch) => (
-            <button key={branch} type="button" onClick={() => setAttendanceBranch(branch)}
+            <button
+              key={branch}
+              type="button"
+              disabled={savingId !== null}
+              onClick={() => setAttendanceBranch(branch)}
               aria-pressed={attendanceBranch === branch}
-              className={cn('rounded-xl border px-5 py-2.5 text-sm font-black transition', attendanceBranch === branch ? 'border-brand-600 bg-brand-600 text-white' : 'border-ink-200 bg-white text-ink-600 hover:border-brand-300')}>
+              className={cn(
+                'rounded-xl border px-5 py-2.5 text-sm font-black transition disabled:cursor-wait disabled:opacity-60',
+                attendanceBranch === branch
+                  ? 'border-brand-600 bg-brand-600 text-white'
+                  : 'border-ink-200 bg-white text-ink-600 hover:border-brand-300',
+              )}
+            >
               {branch}
             </button>
           ))}
@@ -199,14 +231,32 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                         const present = st?.status !== 'absent';
                         const busy = st?.status === 'busy';
                         const justCopied = copiedId === person.id;
+                        const saving = savingId === person.id;
+                        const selectedOtherBranch = attendanceBranch !== currentBranch;
 
-                        const subtitle = busy
-                          ? 'مشغول الآن مع عميل'
-                          : present
-                            ? person.isManager
-                              ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
-                              : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
-                            : 'لم يحضر';
+                        const subtitle = selectedOtherBranch
+                          ? busy
+                            ? `مشغول الآن في ${currentBranch} — لا يمكن نقله قبل إنهاء المقابلة`
+                            : present
+                              ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch}`
+                              : `اضغط لتسجيله في فرع ${attendanceBranch} فقط`
+                          : busy
+                            ? 'مشغول الآن مع عميل'
+                            : present
+                              ? person.isManager
+                                ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
+                                : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
+                              : 'لم يحضر';
+
+                        const registerOrMove = () => {
+                          if (selectedOtherBranch) {
+                            void runAttendanceAction(person, onToggle);
+                          } else if (busy) {
+                            void runAttendanceAction(person, onFree);
+                          } else {
+                            void runAttendanceAction(person, onToggle);
+                          }
+                        };
 
                         return (
                           <div
@@ -220,13 +270,20 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                                   : 'border-ink-100 bg-white hover:border-ink-200',
                             )}
                           >
-                            {/* toggle */}
+                            {/* check in / move */}
                             <button
                               type="button"
-                              onClick={() => (busy ? onFree(person.id, attendanceBranch) : onToggle(person.id, attendanceBranch))}
-                              aria-label={present ? `تسجيل انصراف ${person.name}` : `تسجيل حضور ${person.name}`}
+                              disabled={saving}
+                              onClick={registerOrMove}
+                              aria-label={
+                                selectedOtherBranch
+                                  ? `تسجيل حضور ${person.name} في فرع ${attendanceBranch}`
+                                  : present
+                                    ? `تسجيل انصراف ${person.name}`
+                                    : `تسجيل حضور ${person.name}`
+                              }
                               className={cn(
-                                'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95',
+                                'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95 disabled:cursor-wait disabled:opacity-60',
                                 busy
                                   ? 'bg-amber-500 text-white'
                                   : present
@@ -234,7 +291,9 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                                     : 'border border-ink-200 bg-ink-50 text-ink-300 hover:border-brand-300 hover:text-brand-500',
                               )}
                             >
-                              {busy ? (
+                              {saving ? (
+                                <Loader2 className="size-[18px] animate-spin" strokeWidth={2.4} />
+                              ) : busy ? (
                                 <PhoneCall className="size-[18px]" strokeWidth={2.4} />
                               ) : present ? (
                                 <Check className="size-5" strokeWidth={3} />
@@ -246,8 +305,9 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                             {/* name */}
                             <button
                               type="button"
-                              onClick={() => (busy ? onFree(person.id, attendanceBranch) : onToggle(person.id, attendanceBranch))}
-                              className="min-w-0 flex-1 text-right"
+                              disabled={saving}
+                              onClick={registerOrMove}
+                              className="min-w-0 flex-1 text-right disabled:cursor-wait"
                             >
                               <p className="flex items-center gap-1.5 truncate text-[15px] font-extrabold text-ink-900">
                                 <span className="truncate">{person.name}</span>
@@ -268,7 +328,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                               <button
                                 type="button"
                                 onClick={() => setCopyTarget(person)}
-                                title="نسخ بيان الحضور"
+                                title={`نسخ بيان حضور فرع ${currentBranch}`}
                                 aria-label={`نسخ بيان ${person.name}`}
                                 className={cn(
                                   'grid size-9 shrink-0 place-items-center rounded-xl border transition active:scale-95',
@@ -285,10 +345,12 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                               </button>
                             )}
 
-                            {busy && (
+                            {busy && !selectedOtherBranch && (
                               <button
-                                onClick={() => onFree(person.id, attendanceBranch)}
-                                className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px]"
+                                type="button"
+                                disabled={saving}
+                                onClick={() => void runAttendanceAction(person, onFree)}
+                                className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px] disabled:cursor-wait"
                               >
                                 إنهاء
                               </button>
@@ -305,25 +367,22 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
         );
       })}
 
-      {/* branch chooser */}
+      {/* The statement always reflects the branch where this row is actually present. */}
       <Modal
         open={!!copyTarget}
         onClose={() => setCopyTarget(null)}
         title={copyTarget?.name}
-        subtitle="اختر الفرع لنسخ بيان الحضور"
+        subtitle={`بيان حضور مسجل في فرع ${currentBranch}`}
       >
-        <div className="grid grid-cols-2 gap-3 p-5">
-          {(['SITE', 'RESTA'] as const).map((b) => (
-            <button
-              key={b}
-              type="button"
-              onClick={() => copyTarget && copyStatement(copyTarget, b)}
-              className="flex flex-col items-center gap-2 rounded-2xl border-2 border-ink-100 bg-white py-5 transition hover:border-brand-600 hover:bg-brand-50 active:scale-[0.98]"
-            >
-              <MapPin className="size-6 text-brand-600" strokeWidth={2.2} />
-              <span className="font-display text-[16px] font-black text-ink-900">{b}</span>
-            </button>
-          ))}
+        <div className="p-5">
+          <button
+            type="button"
+            onClick={() => copyTarget && copyStatement(copyTarget, currentBranch)}
+            className="flex w-full flex-col items-center gap-2 rounded-2xl border-2 border-ink-100 bg-white py-5 transition hover:border-brand-600 hover:bg-brand-50 active:scale-[0.98]"
+          >
+            <MapPin className="size-6 text-brand-600" strokeWidth={2.2} />
+            <span className="font-display text-[16px] font-black text-ink-900">نسخ بيان فرع {currentBranch}</span>
+          </button>
         </div>
       </Modal>
     </div>
