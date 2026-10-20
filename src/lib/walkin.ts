@@ -262,6 +262,28 @@ export function changeSalesAttendance(
 }
 
 /**
+ * Update only the check-in time of an already present person.
+ * Used when the manager wants to correct the attendance time after check-in.
+ */
+export function setSalesAttendanceTime(
+  salesState: Record<string, SalesState>,
+  salesId: string,
+  timeISO: string,
+): { salesState: Record<string, SalesState>; changed: boolean } {
+  const current = salesState[salesId];
+  if (!current) return { salesState, changed: false };
+  if (current.status === 'absent') return { salesState, changed: false };
+  if (current.checkInTime === timeISO) return { salesState, changed: false };
+  return {
+    salesState: {
+      ...salesState,
+      [salesId]: { ...current, checkInTime: timeISO },
+    },
+    changed: true,
+  };
+}
+
+/**
  * Rebuild queue counters from history (the source of truth):
  * - walkCount  = own turns served (substituted === false) → drives queue fairness
  * - coverCount = times covering an absent teammate → stats only, never affects order
