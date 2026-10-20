@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2, Clock3, Clock, Edit3 } from 'lucide-react';
+import { useState } from 'react';
+import { Crown, Users, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2, Clock3, Clock, Edit3, LayoutList, LayoutGrid } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from '../lib/walkin';
 import { formatTime, hydrate, loadPersisted, otherWorkspace } from '../lib/walkin';
 import { getSyncConfig, pullRemote } from '../lib/sync';
@@ -13,6 +13,19 @@ import {
 import type { AttendanceWorkbookRow } from '../lib/attendanceExcel';
 
 type Branch = 'SITE' | 'RESTA';
+
+// طريقة عرض الأسماء في تبويب الحضور: طولي (قائمة صفوف) أو عرضي (شبكة كروت)
+type LayoutMode = 'vertical' | 'grid';
+
+const LAYOUT_STORAGE_KEY = 'amer-attendance-layout-v1';
+
+const loadLayoutMode = (): LayoutMode => {
+  try {
+    return localStorage.getItem(LAYOUT_STORAGE_KEY) === 'grid' ? 'grid' : 'vertical';
+  } catch {
+    return 'vertical';
+  }
+};
 
 interface Props {
   account: string;
@@ -74,6 +87,17 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
   const currentBranch: Branch = account.trim().toUpperCase() === 'RESTA' ? 'RESTA' : 'SITE';
   const [attendanceBranch, setAttendanceBranch] = useState<Branch>(currentBranch);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  // ─── طريقة العرض: طولي / عرضي (محفوظة على الجهاز) ───
+  const [layout, setLayout] = useState<LayoutMode>(loadLayoutMode);
+  const changeLayout = (mode: LayoutMode) => {
+    setLayout(mode);
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, mode);
+    } catch {
+      /* التخزين غير متاح — الاختيار يفضل للجلسة الحالية */
+    }
+  };
 
   // ─── time modals ───
   const [preparingPerson, setPreparingPerson] = useState<SalesPerson | null>(null);
@@ -191,6 +215,155 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
   const totalVisible = sales.filter(matches).length;
 
+  // كارت فرد واحد — يتنفس شكله حسب طريقة العرض المختارة (طولي / عرضي)
+  const renderPersonCard = (person: SalesPerson) => {
+    const st = salesState[person.id];
+    const isPresent = st?.status !== 'absent';
+    const busy = st?.status === 'busy';
+    const justCopied = copiedId === person.id;
+    const saving = savingId === person.id;
+    const selectedOtherBranch = attendanceBranch !== currentBranch;
+
+    const subtitle = selectedOtherBranch
+      ? busy
+        ? `مشغول الآن في ${currentBranch} — لا يمكن نقله قبل إنهاء المقابلة`
+        : isPresent
+          ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} مع اختيار الوقت`
+          : `اضغط لتسجيله في فرع ${attendanceBranch} مع اختيار الوقت`
+      : busy
+        ? 'مشغول الآن مع عميل'
+        : isPresent
+          ? person.isManager
+            ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
+            : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
+          : 'لم يحضر — اضغط لاختيار وقت الحضور';
+
+    const handleClick = () => {
+      if (saving) return;
+      if (selectedOtherBranch) {
+        // نقل لفرع آخر → يفتح الساعة أيضا
+        openPrepare(person);
+      } else if (busy) {
+        void runAttendanceAction(person, onFree, false);
+      } else if (isPresent) {
+        // حاضر → انصراف مباشر، التعديل من زر الساعة
+        void runAttendanceAction(person, onToggle, false);
+      } else {
+        // لم يحضر → افتح اختيار وقت الحضور
+        openPrepare(person);
+      }
+    };
+
+    const cardTone = busy
+      ? 'border-amber-200 bg-amber-50/70'
+      : isPresent
+        ? 'border-emerald-200 bg-emerald-50/50'
+        : 'border-ink-100 bg-white hover:border-ink-200';
+    const subtitleTone = busy ? 'text-amber-700' : isPresent ? 'text-emerald-700' : 'text-ink-400';
+
+    const statusButton = (
+      <button
+        type="button"
+        disabled={saving}
+        onClick={handleClick}
+        aria-label={isPresent ? `تسجيل انصراف ${person.name}` : `تحضير ${person.name} مع اختيار الوقت`}
+        className={cn(
+          'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95 disabled:cursor-wait disabled:opacity-60',
+          busy ? 'bg-amber-500 text-white' : isPresent ? 'bg-emerald-500 text-white' : 'border border-ink-200 bg-ink-50 text-ink-300 hover:border-brand-300 hover:text-brand-500',
+        )}
+      >
+        {saving ? <Loader2 className="size-[18px] animate-spin" strokeWidth={2.4} /> : busy ? <PhoneCall className="size-[18px]" strokeWidth={2.4} /> : isPresent ? <Check className="size-5" strokeWidth={3} /> : <Clock3 className="size-[18px]" strokeWidth={2} />}
+      </button>
+    );
+
+    const editButton = isPresent && (
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => openEditTime(person)}
+        title="تعديل وقت الحضور"
+        aria-label={`تعديل وقت حضور ${person.name}`}
+        className="grid size-9 shrink-0 place-items-center rounded-xl border border-ink-200 bg-white text-ink-400 transition hover:border-brand-300 hover:text-brand-600 disabled:cursor-wait disabled:opacity-60"
+      >
+        <Edit3 className="size-4" strokeWidth={2.2} />
+      </button>
+    );
+
+    const copyButton = isPresent && (
+      <button
+        type="button"
+        onClick={() => setCopyTarget(person)}
+        title={`نسخ بيان حضور فرع ${currentBranch}`}
+        aria-label={`نسخ بيان ${person.name}`}
+        className={cn(
+          'grid size-9 shrink-0 place-items-center rounded-xl border transition active:scale-95',
+          justCopied ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-ink-200 bg-white text-ink-400 hover:border-brand-300 hover:text-brand-600',
+        )}
+      >
+        {justCopied ? <CheckCheck className="size-4.5" strokeWidth={2.6} /> : <Copy className="size-4" strokeWidth={2.2} />}
+      </button>
+    );
+
+    const endButton = busy && !selectedOtherBranch && (
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => void runAttendanceAction(person, onFree, false)}
+        className={cn('btn btn-neutral shrink-0 px-2.5 py-2 text-[11px] disabled:cursor-wait', layout === 'grid' && 'flex-1')}
+      >
+        إنهاء
+      </button>
+    );
+
+    // ─── عرض عرضي: كارت مدمج داخل شبكة أعمدة ───
+    if (layout === 'grid') {
+      return (
+        <div key={person.id} className={cn('flex flex-col gap-2 rounded-xl border px-3 py-3 transition-colors', cardTone)}>
+          <div className="flex items-center gap-2.5">
+            {statusButton}
+            <button type="button" disabled={saving} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
+              <p className="flex items-center gap-1.5 text-[14px] font-extrabold text-ink-900">
+                <span className="truncate">{person.name}</span>
+                {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
+              </p>
+            </button>
+          </div>
+
+          <button type="button" disabled={saving} onClick={handleClick} className="block text-right disabled:cursor-wait">
+            <p className={cn('tnum line-clamp-2 min-h-[2rem] text-[11px] font-semibold leading-snug', subtitleTone)}>{subtitle}</p>
+          </button>
+
+          {isPresent && (
+            <div className="mt-auto flex items-center gap-1.5 border-t border-ink-100 pt-2">
+              {editButton}
+              {copyButton}
+              {endButton}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── عرض طولي: صف كامل العرض (الشكل الأصلي) ───
+    return (
+      <div key={person.id} className={cn('flex items-center gap-2.5 rounded-xl border px-3 py-2.5 transition-colors', cardTone)}>
+        {statusButton}
+
+        <button type="button" disabled={saving} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
+          <p className="flex items-center gap-1.5 truncate text-[15px] font-extrabold text-ink-900">
+            <span className="truncate">{person.name}</span>
+            {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
+          </p>
+          <p className={cn('tnum mt-0.5 truncate text-[12px] font-semibold', subtitleTone)}>{subtitle}</p>
+        </button>
+
+        {editButton}
+        {copyButton}
+        {endButton}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
       <div className="surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -224,12 +397,43 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
         </div>
       </div>
 
-      {/* search */}
+      {/* search + view layout toggle */}
       <div className="flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ابحث باسم السيلز…" aria-label="ابحث باسم السيلز" className="field pr-10" />
         </div>
+
+        {/* اختيار طريقة عرض الأسماء: طولي / عرضي */}
+        <div className="grid shrink-0 grid-cols-2 gap-1 self-stretch rounded-xl border border-ink-200 bg-white p-1 sm:self-auto sm:inline-flex" role="group" aria-label="طريقة عرض الأسماء">
+          <button
+            type="button"
+            onClick={() => changeLayout('vertical')}
+            aria-pressed={layout === 'vertical'}
+            title="عرض طولي: الأسماء تحت بعض في صفوف كاملة العرض"
+            className={cn(
+              'inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-extrabold transition',
+              layout === 'vertical' ? 'bg-brand-600 text-white shadow-[0_3px_8px_-2px_rgba(227,6,19,0.5)]' : 'text-ink-500 hover:text-brand-600',
+            )}
+          >
+            <LayoutList className="size-4" strokeWidth={2.3} />
+            طولي
+          </button>
+          <button
+            type="button"
+            onClick={() => changeLayout('grid')}
+            aria-pressed={layout === 'grid'}
+            title="عرض عرضي: الأسماء جنب بعض في كروت وشبكة أعمدة"
+            className={cn(
+              'inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-extrabold transition',
+              layout === 'grid' ? 'bg-brand-600 text-white shadow-[0_3px_8px_-2px_rgba(227,6,19,0.5)]' : 'text-ink-500 hover:text-brand-600',
+            )}
+          >
+            <LayoutGrid className="size-4" strokeWidth={2.3} />
+            عرضي
+          </button>
+        </div>
+
         <button type="button" onClick={() => void exportCombined()} disabled={exporting} className="btn btn-primary shrink-0">
           <Download className="size-4" />
           {exporting ? 'جارٍ تجهيز الملف…' : 'تحميل Excel الحضور'}
@@ -274,108 +478,8 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                       <span className="text-[12px] font-extrabold text-ink-500">تيم {mgr.name}</span>
                       <span className="h-px flex-1 bg-ink-100" />
                     </div>
-                    <div className="space-y-2">
-                      {members.map((person) => {
-                        const st = salesState[person.id];
-                        const isPresent = st?.status !== 'absent';
-                        const busy = st?.status === 'busy';
-                        const justCopied = copiedId === person.id;
-                        const saving = savingId === person.id;
-                        const selectedOtherBranch = attendanceBranch !== currentBranch;
-
-                        const subtitle = selectedOtherBranch
-                          ? busy
-                            ? `مشغول الآن في ${currentBranch} — لا يمكن نقله قبل إنهاء المقابلة`
-                            : isPresent
-                              ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} مع اختيار الوقت`
-                              : `اضغط لتسجيله في فرع ${attendanceBranch} مع اختيار الوقت`
-                          : busy
-                            ? 'مشغول الآن مع عميل'
-                            : isPresent
-                              ? person.isManager
-                                ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
-                                : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
-                              : 'لم يحضر — اضغط لاختيار وقت الحضور';
-
-                        const handleClick = () => {
-                          if (saving) return;
-                          if (selectedOtherBranch) {
-                            // نقل لفرع آخر → يفتح الساعة أيضا
-                            openPrepare(person);
-                          } else if (busy) {
-                            void runAttendanceAction(person, onFree, false);
-                          } else if (isPresent) {
-                            // حاضر → انصراف مباشر، التعديل من زر الساعة
-                            void runAttendanceAction(person, onToggle, false);
-                          } else {
-                            // لم يحضر → افتح اختيار وقت الحضور
-                            openPrepare(person);
-                          }
-                        };
-
-                        return (
-                          <div
-                            key={person.id}
-                            className={cn(
-                              'flex items-center gap-2.5 rounded-xl border px-3 py-2.5 transition-colors',
-                              busy ? 'border-amber-200 bg-amber-50/70' : isPresent ? 'border-emerald-200 bg-emerald-50/50' : 'border-ink-100 bg-white hover:border-ink-200',
-                            )}
-                          >
-                            <button
-                              type="button"
-                              disabled={saving}
-                              onClick={handleClick}
-                              aria-label={isPresent ? `تسجيل انصراف ${person.name}` : `تحضير ${person.name} مع اختيار الوقت`}
-                              className={cn(
-                                'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95 disabled:cursor-wait disabled:opacity-60',
-                                busy ? 'bg-amber-500 text-white' : isPresent ? 'bg-emerald-500 text-white' : 'border border-ink-200 bg-ink-50 text-ink-300 hover:border-brand-300 hover:text-brand-500',
-                              )}
-                            >
-                              {saving ? <Loader2 className="size-[18px] animate-spin" strokeWidth={2.4} /> : busy ? <PhoneCall className="size-[18px]" strokeWidth={2.4} /> : isPresent ? <Check className="size-5" strokeWidth={3} /> : <Clock3 className="size-[18px]" strokeWidth={2} />}
-                            </button>
-
-                            <button type="button" disabled={saving} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
-                              <p className="flex items-center gap-1.5 truncate text-[15px] font-extrabold text-ink-900">
-                                <span className="truncate">{person.name}</span>
-                                {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
-                              </p>
-                              <p className={cn('tnum mt-0.5 truncate text-[12px] font-semibold', busy ? 'text-amber-700' : isPresent ? 'text-emerald-700' : 'text-ink-400')}>{subtitle}</p>
-                            </button>
-
-                            {isPresent && (
-                              <button
-                                type="button"
-                                disabled={saving}
-                                onClick={() => openEditTime(person)}
-                                title="تعديل وقت الحضور"
-                                aria-label={`تعديل وقت حضور ${person.name}`}
-                                className="grid size-9 shrink-0 place-items-center rounded-xl border border-ink-200 bg-white text-ink-400 transition hover:border-brand-300 hover:text-brand-600 disabled:cursor-wait disabled:opacity-60"
-                              >
-                                <Edit3 className="size-4" strokeWidth={2.2} />
-                              </button>
-                            )}
-
-                            {isPresent && (
-                              <button
-                                type="button"
-                                onClick={() => setCopyTarget(person)}
-                                title={`نسخ بيان حضور فرع ${currentBranch}`}
-                                aria-label={`نسخ بيان ${person.name}`}
-                                className={cn(
-                                  'grid size-9 shrink-0 place-items-center rounded-xl border transition active:scale-95',
-                                  justCopied ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-ink-200 bg-white text-ink-400 hover:border-brand-300 hover:text-brand-600',
-                                )}
-                              >
-                                {justCopied ? <CheckCheck className="size-4.5" strokeWidth={2.6} /> : <Copy className="size-4" strokeWidth={2.2} />}
-                              </button>
-                            )}
-
-                            {busy && !selectedOtherBranch && (
-                              <button type="button" disabled={saving} onClick={() => void runAttendanceAction(person, onFree, false)} className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px] disabled:cursor-wait">إنهاء</button>
-                            )}
-                          </div>
-                        );
-                      })}
+                    <div className={layout === 'grid' ? 'grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4' : 'space-y-2'}>
+                      {members.map((person) => renderPersonCard(person))}
                     </div>
                   </div>
                 );
