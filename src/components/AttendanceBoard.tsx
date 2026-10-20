@@ -390,19 +390,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
     <div className="space-y-4">
       <div className="surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
-          <p className="mt-1 text-xs font-medium text-ink-400">
-            اضغط على أي شخص لتختار وقت حضوره من خانة الوقت — الافتراضي هو وقت التحضير الآن.
-          </p>
-          <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-ink-500">
-            <span className="inline-flex items-center gap-1">
-              <span className="size-2.5 rounded-sm bg-brand-600" />
-              <span className="size-2.5 rounded-sm bg-sky-600" />
-              <span className="size-2.5 rounded-sm bg-emerald-600" />
-            </span>
-            كل تيم ليه شريط لون منفصل — أسماء كل تيم جوه كارت واحد، والفاصل بينهم واضح.
-          </p>
-          <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
+          <p className="flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
             <MapPin className="size-3.5" />
             الفرع المختار: {attendanceBranch}
             {attendanceBranch !== currentBranch && ' · سيُسجل في الفرع الآخر'}
