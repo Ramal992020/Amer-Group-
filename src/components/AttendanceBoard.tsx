@@ -65,48 +65,6 @@ const parseHM = (timeStr: string): { h: number; m: number } => {
   return { h, m };
 };
 
-// ─── Analog clock face ───
-function AnalogClock({ timeStr }: { timeStr: string }) {
-  const { h, m } = parseHM(timeStr);
-  const hourAngle = (h % 12) * 30 + m * 0.5; // 360/12 =30
-  const minuteAngle = m * 6; // 360/60=6
-
-  return (
-    <div className="relative mx-auto size-[180px] shrink-0 rounded-full border-[3px] border-ink-900 bg-white shadow-[0_8px_24px_-8px_rgba(0,0,0,0.25)]">
-      {/* ticks */}
-      {Array.from({ length: 12 }).map((_, i) => {
-        const ang = i * 30;
-        const isHour = i % 3 === 0;
-        return (
-          <span
-            key={i}
-            className="absolute left-1/2 top-1/2 h-[84px] w-px origin-bottom bg-ink-200"
-            style={{ transform: `translate(-50%, -100%) rotate(${ang}deg)` }}
-          >
-            <span className={cn('absolute left-1/2 top-0 block -translate-x-1/2 rounded-full bg-ink-900', isHour ? 'h-2.5 w-1' : 'h-1.5 w-px bg-ink-300')} />
-          </span>
-        );
-      })}
-      {/* hour hand */}
-      <span
-        className="absolute left-1/2 top-1/2 h-[52px] w-[5px] origin-bottom -translate-x-1/2 -translate-y-full rounded-full bg-ink-900 transition-transform duration-300"
-        style={{ transform: `translate(-50%, -100%) rotate(${hourAngle}deg)` }}
-      />
-      {/* minute hand */}
-      <span
-        className="absolute left-1/2 top-1/2 h-[72px] w-[3px] origin-bottom -translate-x-1/2 -translate-y-full rounded-full bg-brand-600 transition-transform duration-300"
-        style={{ transform: `translate(-50%, -100%) rotate(${minuteAngle}deg)` }}
-      />
-      {/* center dot */}
-      <span className="absolute left-1/2 top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-900 ring-2 ring-white" />
-      {/* digital inside */}
-      <span className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-lg bg-ink-900 px-2 py-0.5 text-[11px] font-black text-white tnum">
-        {String(h).padStart(2, '0')}:{String(m).padStart(2, '0')}
-      </span>
-    </div>
-  );
-}
-
 export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdateTime, heads, managers, sales }: Props) {
   const toast = useToast();
   const [copyTarget, setCopyTarget] = useState<SalesPerson | null>(null);
@@ -239,7 +197,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
         <div>
           <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
           <p className="mt-1 text-xs font-medium text-ink-400">
-            اضغط على أي شخص ليظهر لك شكل الساعة وتختار وقت حضوره — الافتراضي هو وقت التحضير الآن.
+            اضغط على أي شخص لتختار وقت حضوره من خانة الوقت — الافتراضي هو وقت التحضير الآن.
           </p>
           <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
             <MapPin className="size-3.5" />
@@ -350,7 +308,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                             // حاضر → انصراف مباشر، التعديل من زر الساعة
                             void runAttendanceAction(person, onToggle, false);
                           } else {
-                            // لم يحضر → افتح شكل الساعة
+                            // لم يحضر → افتح اختيار وقت الحضور
                             openPrepare(person);
                           }
                         };
@@ -436,7 +394,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
         </div>
       </Modal>
 
-      {/* ─── Prepare modal with analog clock ─── */}
+      {/* ─── Prepare modal ─── */}
       <Modal
         open={!!preparingPerson}
         onClose={() => setPreparingPerson(null)}
@@ -444,25 +402,21 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
         subtitle={`اختر وقت الحضور — الافتراضي وقت التحضير الآن • فرع ${attendanceBranch}`}
       >
         <div className="space-y-5 p-5">
-          <div className="flex flex-col items-center gap-4">
-            <AnalogClock timeStr={prepareTimeStr} />
-            <div className="flex flex-col items-center gap-1">
-              <p className="flex items-center gap-1.5 text-[12px] font-extrabold text-ink-500">
-                <Clock className="size-4" /> شكل الساعة — الوقت المختار
-              </p>
-              <p className="tnum text-[28px] font-black leading-none text-ink-900">{prepareTimeStr}</p>
-              <p className="text-[11px] font-bold text-ink-400">{preparingPerson ? formatTime(timeStrToISO(prepareTimeStr)) : ''} • فرع {attendanceBranch}</p>
-            </div>
+          <div className="space-y-2">
+            <label htmlFor="prepare-time" className="block text-[12px] font-extrabold text-ink-700">اضبط وقت الحضور</label>
+            <input
+              id="prepare-time"
+              type="time"
+              value={prepareTimeStr}
+              onChange={(e) => setPrepareTimeStr(e.target.value || nowTimeStr())}
+              className="field w-full text-center text-[18px] font-black tracking-widest"
+            />
           </div>
 
-          <div className="space-y-3">
-            <label className="text-[12px] font-extrabold text-ink-700">اضبط وقت الحضور</label>
-            <input type="time" value={prepareTimeStr} onChange={(e) => setPrepareTimeStr(e.target.value || nowTimeStr())} className="field w-full text-center text-[18px] font-black tracking-widest" />
-            <div className="grid grid-cols-3 gap-2">
-              <button type="button" onClick={() => setPrepareTimeStr(nowTimeStr())} className="btn btn-neutral py-2.5 text-[12px]"><Clock className="size-4" /> الآن</button>
-              <button type="button" onClick={() => { const { h, m } = parseHM(prepareTimeStr); const d = new Date(); d.setHours(h); d.setMinutes(m - 5); setPrepareTimeStr(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`); }} className="btn btn-neutral py-2.5 text-[12px]">-5 د</button>
-              <button type="button" onClick={() => { const { h, m } = parseHM(prepareTimeStr); const d = new Date(); d.setHours(h); d.setMinutes(m + 5); setPrepareTimeStr(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`); }} className="btn btn-neutral py-2.5 text-[12px]">+5 د</button>
-            </div>
+          <div className="grid grid-cols-3 gap-2">
+            <button type="button" onClick={() => setPrepareTimeStr(nowTimeStr())} className="btn btn-neutral py-2.5 text-[12px]"><Clock className="size-4" /> الآن</button>
+            <button type="button" onClick={() => { const { h, m } = parseHM(prepareTimeStr); const d = new Date(); d.setHours(h); d.setMinutes(m - 5); setPrepareTimeStr(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`); }} className="btn btn-neutral py-2.5 text-[12px]">-5 د</button>
+            <button type="button" onClick={() => { const { h, m } = parseHM(prepareTimeStr); const d = new Date(); d.setHours(h); d.setMinutes(m + 5); setPrepareTimeStr(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`); }} className="btn btn-neutral py-2.5 text-[12px]">+5 د</button>
           </div>
 
           <div className="flex gap-2 pt-1">
@@ -477,11 +431,8 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
       {/* Edit attendance time modal */}
       <Modal open={!!editingPerson} onClose={() => setEditingPerson(null)} title={editingPerson ? `تعديل وقت حضور ${editingPerson.name}` : 'تعديل وقت الحضور'} subtitle="يمكنك التحكم في وقت حضور أي شخص">
         <div className="space-y-5 p-5">
-          <div className="flex flex-col items-center gap-3">
-            <AnalogClock timeStr={editTimeStr} />
-            <div className="rounded-xl border border-ink-100 bg-ink-50/70 px-3 py-2">
-              <p className="flex items-center gap-1.5 text-[12px] font-bold text-ink-500"><Clock3 className="size-4" /> الوقت الحالي المسجل: {editingPerson ? formatTime(salesState[editingPerson.id]?.checkInTime ?? '') : ''}</p>
-            </div>
+          <div className="rounded-xl border border-ink-100 bg-ink-50/70 px-3 py-2">
+            <p className="flex items-center gap-1.5 text-[12px] font-bold text-ink-500"><Clock3 className="size-4" /> الوقت الحالي المسجل: {editingPerson ? formatTime(salesState[editingPerson.id]?.checkInTime ?? '') : ''}</p>
           </div>
           <div className="flex flex-col gap-2">
             <label className="text-[12px] font-extrabold text-ink-700">اختر وقت الحضور الجديد</label>
