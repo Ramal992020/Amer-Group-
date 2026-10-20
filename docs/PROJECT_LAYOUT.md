@@ -38,11 +38,33 @@ grep -o "postgres_changes" dist/index.html          # Realtime subscription
 grep -o "الفرع الآخر" dist/index.html                # shared roster (org) sync
 grep -o "يظهر في الفرعين SITE و RESTA" dist/index.html # «إضافة عضو جديد» subtitle
 grep -o "Shifted ❌" dist/index.html                  # receipt line for a passed-over team
+grep -o "كل تيم ليه شريط لون منفصل" dist/index.html  # colour-coded team cards
 grep -o "تم حفظ الدورة وتثبيتها" dist/index.html       # toast after saving the turn order
 grep -o "الحضور المجمع" dist/index.html           # combined SITE+RESTA attendance file
 grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1/ root
                                                     # check is what killed sync
 ```
+
+## Attendance screen — one visible card per team
+
+The «الحضور» tab must never show two teams as one continuous list of names.
+Every manager team is rendered by `AttendanceBoard` as its own card:
+
+* a **solid colour band** (`TEAM_THEMES` + `teamThemeAt` in
+  `src/components/AttendanceBoard.tsx`) carrying the team's running number
+  (`01`, `02`, …), `تيم <manager>`, the Arabic name, the head name, the
+  manager's mobile and `x/y حاضر`;
+* a 2px border in the same colour and a neutral body holding that team's
+  person cards.
+
+The colour is derived from the team's position in the full roster
+(`managers.findIndex`), **not** from the filtered/searched list, so a team keeps
+its identity while searching and when someone is absent. `TEAM_THEMES` cycles
+eight complete literal class sets (brand, sky, emerald, violet, orange, teal,
+rose, indigo) — keep them as literals so Tailwind emits them. Both layouts
+(«طولي» rows and «عرضي» grid) render inside the same team card; the toggle may
+change the arrangement of names but must not merge two teams. The line
+«كل تيم ليه شريط لون منفصل» under the intro is the build marker for this.
 
 ## Attendance Excel («تحميل Excel الحضور»)
 

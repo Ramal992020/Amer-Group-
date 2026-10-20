@@ -1493,6 +1493,14 @@ function WalkInApp({
     branchAttendanceInFlightRef.current = true;
     try {
       const result = await writeBranchAttendanceTime(targetBranch, id, timeISO);
+      if (result.kind === 'busy') {
+        toast('error', 'الشخص مشغول الآن — أنهِ المقابلة قبل تعديل وقته');
+        return;
+      }
+      if (result.kind === 'missing') {
+        toast('error', 'تعذر العثور على سجل هذا الشخص في الفرع المختار');
+        return;
+      }
       if (result.kind === 'failed') {
         toast('error', 'تعذر تحديث وقت الحضور');
         return;
@@ -2091,20 +2099,33 @@ function WalkInApp({
                       icon={<PhoneCall className="size-4.5" strokeWidth={2.1} />}
                     />
                     <div className="space-y-2">
-                      {busyList.map((s) => (
-                        <div
-                          key={s.id}
-                          className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-[14px] font-extrabold text-ink-900">{s.name}</p>
-                            <p className="text-[11.5px] font-semibold text-amber-700">مشغول مع عميل</p>
+                      {busyList.map((s) => {
+                        // The team is part of the identity here too: two sales
+                        // with similar names are told apart by their team chip.
+                        const busyTeam = managers.find((m) => m.id === s.managerId);
+                        return (
+                          <div
+                            key={s.id}
+                            className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-[14px] font-extrabold text-ink-900">{s.name}</p>
+                              <p className="flex flex-wrap items-center gap-1.5 text-[11.5px] font-semibold text-amber-700">
+                                مشغول مع عميل
+                                {busyTeam && (
+                                  <span className="badge badge-gray shrink-0">
+                                    <Users className="size-2.5" />
+                                    تيم {busyTeam.name}
+                                  </span>
+                                )}
+                              </p>
+                            </div>
+                            <button onClick={() => freeSales(s.id)} className="btn btn-neutral shrink-0 px-3 py-2 text-[12px]">
+                              إنهاء
+                            </button>
                           </div>
-                          <button onClick={() => freeSales(s.id)} className="btn btn-neutral shrink-0 px-3 py-2 text-[12px]">
-                            إنهاء
-                          </button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </section>
                 )}
