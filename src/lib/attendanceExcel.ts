@@ -1,5 +1,6 @@
 import XLSX from 'xlsx-js-style';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from './walkin';
+import { isHiddenFromAttendance, normalizeAttendanceName } from './attendanceVisibility.ts';
 
 export interface AttendanceWorkbookRow {
   person: SalesPerson;
@@ -19,18 +20,45 @@ const DIRECTORS: Record<string, string> = {
   'ahmed-sultan': 'Meteab',
 };
 
+/**
+ * Directors resolved by NAME, for every team whose id is not one of the
+ * built-in ones (a manager added from «الهيكل» gets a generated id such as
+ * `custom-sayed-247`, so his name is the only stable thing to match).
+ *
+ * Keys are `normalizeAttendanceName()` output — spelling, spacing, case and the
+ * Arabic letter variants are all ignored by the lookup.
+ */
 const DIRECTORS_BY_NAME: Record<string, string> = {
-  'ahmed yossry': 'Sayed Magdy',
+  ahmedyossry: 'Sayed Magdy',
   perry: 'Sayed Magdy',
   rewaida: 'Karem Azab',
-  'youssef shehata': 'Ahmed Elrawy',
-  'ahmed sultan': 'Meteab',
+  youssefshehata: 'Ahmed Elrawy',
+  ahmedsultan: 'Meteab',
 };
 
-const normalize = (value: string): string => value.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+/**
+ * Name rules for a director that must hold whatever head the manager sits
+ * under — used when a manager belongs to a director who is not one of the
+ * heads. «Sayed Naser» reports to Ahmed Fawzy, so every row of his team prints
+ * «Ahmed Fawzy» in the Director column instead of the head's name.
+ */
+const DIRECTOR_RULES: { matches: (name: string) => boolean; director: string }[] = [
+  {
+    matches: (name) =>
+      name.startsWith('sayednas') ||
+      name.startsWith('saydnas') ||
+      name.startsWith('سيدناصر') ||
+      name.startsWith('سيدنصر'),
+    director: 'Ahmed Fawzy',
+  },
+];
 
-export const directorFor = (managerName: string, fallback = '', managerId = ''): string =>
-  DIRECTORS[managerId] ?? DIRECTORS_BY_NAME[normalize(managerName)] ?? fallback;
+export const directorFor = (managerName: string, fallback = '', managerId = ''): string => {
+  const name = normalizeAttendanceName(managerName ?? '');
+  const rule = DIRECTOR_RULES.find((entry) => entry.matches(name));
+  if (rule) return rule.director;
+  return DIRECTORS[managerId] ?? DIRECTORS_BY_NAME[name] ?? fallback;
+};
 
 const asTime = (value?: string | null): string => {
   if (!value) return '';
@@ -181,9 +209,12 @@ export const mobileFor = (row: AttendanceWorkbookRow): string => {
 
 /** Builds the attendance workbook in the same layout as the supplied template. */
 export const createAttendanceWorkbook = (rows: AttendanceWorkbookRow[]): XLSX.WorkBook => {
+  // Final gate for the «جدول الحضور»: a manager listed in
+  // HIDDEN_FROM_ATTENDANCE has no row here, whichever caller built the list.
+  const printable = rows.filter((row) => !isHiddenFromAttendance(row.person));
   const blank = (): string[] => new Array(COLUMN_COUNT).fill('');
-  const present = rows.filter((row) => !isAbsent(row));
-  const absent = rows.filter(isAbsent);
+  const present = printable.filter((row) => !isAbsent(row));
+  const absent = printable.filter(isAbsent);
   const ordered: (AttendanceWorkbookRow | null)[] = [
     ...present,
     ...(absent.length ? [null, ...absent] : []),
@@ -278,6 +309,7 @@ export const attendanceRowsFor = (
   salesState: Record<string, SalesState>,
 ): AttendanceWorkbookRow[] =>
   roster.sales
+    .filter((person) => !isHiddenFromAttendance(person))
     .slice()
     .sort(
       (a, b) =>
@@ -309,6 +341,7 @@ export const mergeAttendanceRows = (...groups: AttendanceWorkbookRow[][]): Atten
   const byPerson = new Map<string, AttendanceWorkbookRow>();
   for (const group of groups) {
     for (const row of group) {
+      if (isHiddenFromAttendance(row.person)) continue;
       const current = byPerson.get(row.person.id);
       if (!current) {
         byPerson.set(row.person.id, row);

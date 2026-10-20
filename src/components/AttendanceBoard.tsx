@@ -11,6 +11,7 @@ import {
   mergeAttendanceRows,
 } from '../lib/attendanceExcel';
 import type { AttendanceWorkbookRow } from '../lib/attendanceExcel';
+import { visibleAttendanceSales } from '../lib/attendanceVisibility';
 
 type Branch = 'SITE' | 'RESTA';
 
@@ -107,6 +108,10 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
   const [query, setQuery] = useState('');
   const [exporting, setExporting] = useState(false);
   const currentBranch: Branch = account.trim().toUpperCase() === 'RESTA' ? 'RESTA' : 'SITE';
+  // «جدول الحضور» lists attendance only — a manager listed in
+  // HIDDEN_FROM_ATTENDANCE keeps his team, his history and his data but never
+  // gets a card here (the Excel file is filtered by the same helper).
+  const attendanceSales = visibleAttendanceSales(sales);
   const [attendanceBranch, setAttendanceBranch] = useState<Branch>(currentBranch);
   const [savingId, setSavingId] = useState<string | null>(null);
 
@@ -143,7 +148,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
     if (exporting) return;
     setExporting(true);
     try {
-      const roster = { sales, managers, heads };
+      const roster = { sales: attendanceSales, managers, heads };
       const mine = attendanceRowsFor(roster, salesState);
       let theirs: AttendanceWorkbookRow[] = [];
       const other = otherWorkspace(account);
@@ -235,7 +240,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
     }
   };
 
-  const totalVisible = sales.filter(matches).length;
+  const totalVisible = attendanceSales.filter(matches).length;
 
   // كارت فرد واحد — يتنفس شكله حسب طريقة العرض المختارة (طولي / عرضي)
   const renderPersonCard = (person: SalesPerson) => {
@@ -466,7 +471,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
       {heads.map((head, hi) => {
         const headManagers = managers.filter((m) => m.headId === head.id);
-        const headSales = sales.filter((s) => s.headId === head.id);
+        const headSales = attendanceSales.filter((s) => s.headId === head.id);
         const visible = headSales.filter(matches);
         if (visible.length === 0) return null;
         const present = headSales.filter((s) => salesState[s.id]?.status !== 'absent').length;
@@ -489,7 +494,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
             <div className="space-y-3.5 p-3 sm:p-3.5">
               {headManagers.map((mgr, mi) => {
-                const allMembers = sales.filter((s) => s.managerId === mgr.id);
+                const allMembers = attendanceSales.filter((s) => s.managerId === mgr.id);
                 const members = allMembers.filter(matches);
                 if (members.length === 0) return null;
 

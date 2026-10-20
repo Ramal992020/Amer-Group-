@@ -13,7 +13,8 @@ import {
   textWidthPx,
 } from './attendanceExcel.ts';
 import type { AttendanceRoster, AttendanceWorkbookRow } from './attendanceExcel.ts';
-import type { SalesPerson, SalesState } from './walkin.ts';
+import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from './walkin.ts';
+import { isHiddenFromAttendance, visibleAttendanceSales } from './attendanceVisibility.ts';
 
 const sample: AttendanceWorkbookRow[] = [{
   person: { id: 'sam', name: 'Sam Sales', managerId: 'ahmed', headId: 'khaled', phone: '01000000000' },
@@ -261,4 +262,78 @@ test('empty and all-absent workbooks keep the separator and canvas valid', () =>
   const large = createAttendanceWorkbook(Array.from({ length: 40 }, () => ({ ...sample[0], attendance: undefined }))).Sheets['Sales Team'];
   assert.equal(large['!ref'], 'A1:F43');
   assert.equal(large.E43.v, 'لم يحضر');
+});
+
+// ─── Managers excluded from the attendance table ───
+
+test('the listed managers never appear in the attendance table, whatever the spelling', () => {
+  assert.ok(isHiddenFromAttendance({ name: 'Dina Abdo' }));
+  assert.ok(isHiddenFromAttendance({ name: '  DINA   ABDO ' }));
+  assert.ok(isHiddenFromAttendance({ name: 'Dina Abdou' }));
+  assert.ok(isHiddenFromAttendance({ name: 'دينا عبده' }));
+  assert.ok(isHiddenFromAttendance({ name: 'Ahmed Sultan' }));
+  assert.ok(isHiddenFromAttendance({ name: 'أحمد سلطان' }));
+  assert.ok(isHiddenFromAttendance({ name: 'Hany El-Shenawy' }));
+  assert.ok(isHiddenFromAttendance({ name: 'هاني الشناوي' }));
+  assert.ok(isHiddenFromAttendance({ name: 'Moataz Mandouh' }));
+  // A different person is never swallowed by the matching.
+  assert.ok(!isHiddenFromAttendance({ name: 'Hany Other' }));
+  assert.ok(!isHiddenFromAttendance({ name: 'Sayed Naser' }));
+
+  const roster: AttendanceRoster = {
+    sales: [
+      { id: 'sam', name: 'Sam Sales', managerId: 'ahmed', headId: 'khaled' },
+      { id: 'custom-dina-247', name: 'Dina Abdo', managerId: 'custom-dina-247', headId: 'mohamed-samir', isManager: true },
+      { id: 'custom-hany-1', name: 'Hany Elshenawy', managerId: 'custom-hany-1', headId: 'wael', isManager: true },
+      { id: 'custom-moataz-1', name: 'Moataz Mandoh', managerId: 'custom-moataz-1', headId: 'wael', isManager: true },
+      { id: 'custom-sultan-1', name: 'Ahmed Sultan', managerId: 'custom-sultan-1', headId: 'khaled', isManager: true },
+    ],
+    managers: [],
+    heads: [],
+  };
+  const state: Record<string, SalesState> = { sam: stateAt(1, '2026-10-19T08:00:00.000Z') };
+
+  // The exported rows of the branch…
+  const rows = attendanceRowsFor(roster, state);
+  assert.deepEqual(rows.map((row) => row.person.name), ['Sam Sales']);
+  assert.equal(visibleAttendanceSales(roster.sales).length, 1);
+
+  // …and the workbook itself, even when a caller hands it unfiltered rows.
+  const sheet = createAttendanceWorkbook(roster.sales.map((person) => ({ person }))).Sheets['Sales Team'];
+  const sheetRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true }) as unknown[][];
+  const names = sheetRows.flat().map((value) => String(value ?? ''));
+  for (const hidden of ['Dina Abdo', 'Hany Elshenawy', 'Moataz Mandoh', 'Ahmed Sultan']) {
+    assert.equal(names.includes(hidden), false, `${hidden} is not printed`);
+  }
+  assert.ok(names.includes('Sam Sales'), 'everybody else keeps their row');
+});
+
+test('Sayed Naser’s director is Ahmed Fawzy instead of the head above him', () => {
+  assert.equal(directorFor('Sayed Naser'), 'Ahmed Fawzy');
+  assert.equal(directorFor('  sayed   nasser '), 'Ahmed Fawzy');
+  assert.equal(directorFor('Sayed Nasr'), 'Ahmed Fawzy');
+  assert.equal(directorFor('سيد ناصر'), 'Ahmed Fawzy');
+  // Works for a team added from «الهيكل» too (its id is generated, not built-in).
+  assert.equal(directorFor('Sayed Naser', 'Wael El Desoky', 'custom-sayed-782'), 'Ahmed Fawzy');
+
+  // It reaches the sheet: manager + every sales row of his team.
+  const manager: ManagerTeam = { id: 'custom-sayed-782', name: 'Sayed Naser', ar: 'سيد ناصر', headId: 'wael' };
+  const head: HeadGroup = { id: 'wael', name: 'Wael El Desoky', ar: '' };
+  const sheet = createAttendanceWorkbook([
+    {
+      person: { id: 'custom-sayed-782-self', name: 'Sayed Naser', managerId: manager.id, headId: head.id, isManager: true },
+      manager,
+      head,
+      attendance: stateAt(1, '2026-10-19T08:00:00.000Z'),
+    },
+    {
+      person: { id: 'nour', name: 'Nour Sales', managerId: manager.id, headId: head.id },
+      manager,
+      head,
+      attendance: stateAt(2, '2026-10-19T08:05:00.000Z'),
+    },
+  ]).Sheets['Sales Team'];
+  assert.equal(sheet.B3.v, 'Ahmed Fawzy');
+  assert.equal(sheet.B4.v, 'Ahmed Fawzy');
+  assert.equal(sheet.C3.v, 'Wael El Desoky');
 });
