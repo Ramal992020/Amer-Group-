@@ -15,6 +15,13 @@
 export interface AttendanceNameLike {
   name?: string | null;
   ar?: string | null;
+  /**
+   * Explicit toggle from «الهيكل»:
+   *  • `true`      → disabled everywhere on the app (never shown in attendance);
+   *  • `false`     → explicitly activated in «الهيكل» (shown in attendance even if listed below);
+   *  • `undefined` → falls back to `HIDDEN_FROM_ATTENDANCE`.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -52,12 +59,30 @@ const HIDDEN_SQUASHED = new Set(
   HIDDEN_FROM_ATTENDANCE.flat().map((spelling) => normalizeAttendanceName(spelling)),
 );
 
-/** True when this person's own row must never appear in the attendance table. */
-export const isHiddenFromAttendance = (person: AttendanceNameLike): boolean =>
-  [person.name, person.ar].some((value) => {
+/** True when this person matches the default built-in hidden managers list. */
+export const isDefaultHiddenFromAttendance = (
+  person: AttendanceNameLike | string,
+): boolean => {
+  const candidates = typeof person === 'string' ? [person] : [person.name, person.ar];
+  return candidates.some((value) => {
     const squashed = normalizeAttendanceName(value ?? '');
     return squashed.length > 0 && HIDDEN_SQUASHED.has(squashed);
   });
+};
+
+/**
+ * True when this person's own row must not appear in the attendance table:
+ *  • `disabled === true`  → explicitly disabled from «الهيكل»;
+ *  • `disabled === false` → explicitly activated from «الهيكل» (appears in attendance);
+ *  • `disabled === undefined` → uses `HIDDEN_FROM_ATTENDANCE`.
+ */
+export const isHiddenFromAttendance = (person: AttendanceNameLike | string): boolean => {
+  if (typeof person !== 'string') {
+    if (person.disabled === true) return true;
+    if (person.disabled === false) return false;
+  }
+  return isDefaultHiddenFromAttendance(person);
+};
 
 /** The roster that the attendance table may render / export. */
 export const visibleAttendanceSales = <T extends AttendanceNameLike>(sales: readonly T[]): T[] =>

@@ -1,5 +1,6 @@
 import XLSX from 'xlsx-js-style';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from './walkin';
+import { isPersonDisabled } from './walkin.ts';
 import { isHiddenFromAttendance, normalizeAttendanceName } from './attendanceVisibility.ts';
 
 export interface AttendanceWorkbookRow {
@@ -8,6 +9,12 @@ export interface AttendanceWorkbookRow {
   head?: HeadGroup;
   attendance?: SalesState;
 }
+
+const isHiddenWorkbookRow = (row: AttendanceWorkbookRow): boolean =>
+  isHiddenFromAttendance(row.person) ||
+  Boolean(row.person.disabled) ||
+  Boolean(row.manager?.disabled) ||
+  Boolean(row.head?.disabled);
 
 const isAbsent = (row: AttendanceWorkbookRow): boolean =>
   !row.attendance || row.attendance.status === 'absent';
@@ -209,9 +216,9 @@ export const mobileFor = (row: AttendanceWorkbookRow): string => {
 
 /** Builds the attendance workbook in the same layout as the supplied template. */
 export const createAttendanceWorkbook = (rows: AttendanceWorkbookRow[]): XLSX.WorkBook => {
-  // Final gate for the «جدول الحضور»: a manager listed in
-  // HIDDEN_FROM_ATTENDANCE has no row here, whichever caller built the list.
-  const printable = rows.filter((row) => !isHiddenFromAttendance(row.person));
+  // Final gate for the «جدول الحضور»: a disabled person/team/head or a manager
+  // listed in HIDDEN_FROM_ATTENDANCE has no row here, whichever caller built the list.
+  const printable = rows.filter((row) => !isHiddenWorkbookRow(row));
   const blank = (): string[] => new Array(COLUMN_COUNT).fill('');
   const present = printable.filter((row) => !isAbsent(row));
   const absent = printable.filter(isAbsent);
@@ -309,7 +316,11 @@ export const attendanceRowsFor = (
   salesState: Record<string, SalesState>,
 ): AttendanceWorkbookRow[] =>
   roster.sales
-    .filter((person) => !isHiddenFromAttendance(person))
+    .filter(
+      (person) =>
+        !isHiddenFromAttendance(person) &&
+        !isPersonDisabled(person, roster.managers, roster.heads),
+    )
     .slice()
     .sort(
       (a, b) =>
@@ -341,7 +352,7 @@ export const mergeAttendanceRows = (...groups: AttendanceWorkbookRow[][]): Atten
   const byPerson = new Map<string, AttendanceWorkbookRow>();
   for (const group of groups) {
     for (const row of group) {
-      if (isHiddenFromAttendance(row.person)) continue;
+      if (isHiddenWorkbookRow(row)) continue;
       const current = byPerson.get(row.person.id);
       if (!current) {
         byPerson.set(row.person.id, row);

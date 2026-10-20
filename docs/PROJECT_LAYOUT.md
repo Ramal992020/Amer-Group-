@@ -148,6 +148,26 @@ Deleting those managers from «الهيكل» instead would throw away their tea
 their history and their rotation slot — that is why this is a filter, not a
 deletion. Their data, their phone number and their own attendance stay intact.
 
+### Disabling / re-enabling members from «الهيكل»
+
+Any person (sales member or manager), whole manager team, or Head group can be
+temporarily disabled (`disabled: true`) and re-enabled (`disabled: false`) from
+«الهيكل» (`ManageOrgPanel` → `setSalesPersonDisabled` / `setManagerDisabled` /
+`setHeadDisabled` in `src/lib/org.ts`) without deleting their ID, mobile number,
+shift time, team slot, or served history:
+
+* `disabled: true` — hidden and inactive everywhere outside «الهيكل» across both
+  SITE and RESTA (`activeOrg()`, `AttendanceBoard`, `attendanceRowsFor()` /
+  `mergeAttendanceRows()` / `createAttendanceWorkbook()`, `computeTurnPlan()` /
+  `computeNextTurn()` / `predictFullRound()`, `CurrentTurn`, `ClientExcelBuilder`,
+  and the «الترتيب» tab), with any active check-in cleared automatically via
+  `clearSalesAttendance()`.
+* `disabled: false` — explicitly re-enabled from «الهيكل»: visible in Attendance
+  and Excel (`isHiddenFromAttendance()` returns `false`, overriding
+  `HIDDEN_FROM_ATTENDANCE`) with full app permissions restored immediately.
+* `disabled: undefined` — untouched built-in default: active everywhere while
+  `isHiddenFromAttendance()` falls back to `HIDDEN_FROM_ATTENDANCE`.
+
 ### The Director column
 
 `directorFor(managerName, headFallback, managerId)` in `attendanceExcel.ts`
