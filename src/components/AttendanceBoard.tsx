@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Crown, Users, UserRound, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2, Clock3, Clock, Edit3 } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from '../lib/walkin';
 import { formatTime, hydrate, loadPersisted, otherWorkspace } from '../lib/walkin';
 import { getSyncConfig, pullRemote } from '../lib/sync';
@@ -17,14 +17,48 @@ type Branch = 'SITE' | 'RESTA';
 interface Props {
   account: string;
   salesState: Record<string, SalesState>;
-  onToggle: (id: string, branch?: Branch) => void | Promise<void>;
-  onFree: (id: string, branch?: Branch) => void | Promise<void>;
+  onToggle: (id: string, branch?: Branch, at?: string) => void | Promise<void>;
+  onFree: (id: string, branch?: Branch, at?: string) => void | Promise<void>;
+  onUpdateTime?: (id: string, branch?: Branch, timeISO?: string) => void | Promise<void>;
   heads: HeadGroup[];
   managers: ManagerTeam[];
   sales: SalesPerson[];
 }
 
-export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, managers, sales }: Props) {
+// ─── time helpers ───
+const nowTimeStr = (): string => {
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+};
+
+const timeStrToISO = (timeStr: string): string => {
+  const [hStr, mStr] = timeStr.split(':');
+  const h = Number.parseInt(hStr ?? '0', 10);
+  const m = Number.parseInt(mStr ?? '0', 10);
+  const d = new Date();
+  if (Number.isFinite(h)) d.setHours(h);
+  if (Number.isFinite(m)) d.setMinutes(m);
+  d.setSeconds(0);
+  d.setMilliseconds(0);
+  return d.toISOString();
+};
+
+const isoToTimeStr = (iso?: string | null): string => {
+  if (!iso) return nowTimeStr();
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return nowTimeStr();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  } catch {
+    return nowTimeStr();
+  }
+};
+
+export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdateTime, heads, managers, sales }: Props) {
   const toast = useToast();
   const [copyTarget, setCopyTarget] = useState<SalesPerson | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -33,6 +67,21 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
   const currentBranch: Branch = account.trim().toUpperCase() === 'RESTA' ? 'RESTA' : 'SITE';
   const [attendanceBranch, setAttendanceBranch] = useState<Branch>(currentBranch);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  // ─── time control ───
+  const [defaultTimeStr, setDefaultTimeStr] = useState<string>(() => nowTimeStr());
+  const [editingPerson, setEditingPerson] = useState<SalesPerson | null>(null);
+  const [editTimeStr, setEditTimeStr] = useState<string>(nowTimeStr());
+
+  const defaultTimeISO = useMemo(() => timeStrToISO(defaultTimeStr), [defaultTimeStr]);
+
+  const openEditTime = (person: SalesPerson) => {
+    const st = salesState[person.id];
+    setEditingPerson(person);
+    setEditTimeStr(isoToTimeStr(st?.checkInTime));
+  };
+
+  const refreshDefaultToNow = () => setDefaultTimeStr(nowTimeStr());
 
   /**
    * «تحميل Excel الحضور» — ONE combined file for BOTH branches, downloadable
@@ -103,12 +152,33 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
 
   const runAttendanceAction = async (
     person: SalesPerson,
-    action: (id: string, branch: Branch) => void | Promise<void>,
+    action: (id: string, branch: Branch, at?: string) => void | Promise<void>,
+    withTime = true,
   ): Promise<void> => {
     if (savingId) return;
     setSavingId(person.id);
     try {
-      await action(person.id, attendanceBranch);
+      if (withTime) {
+        // عند التحضير: الوقت الافتراضي هو وقت التحضير، ويمكن التحكم فيه
+        await action(person.id, attendanceBranch, defaultTimeISO);
+      } else {
+        await action(person.id, attendanceBranch);
+      }
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const runUpdateTime = async (): Promise<void> => {
+    if (!editingPerson || savingId) return;
+    const iso = timeStrToISO(editTimeStr);
+    setSavingId(editingPerson.id);
+    try {
+      if (onUpdateTime) {
+        await onUpdateTime(editingPerson.id, currentBranch, iso);
+      }
+      toast('success', `تم تحديث وقت حضور ${editingPerson.name} إلى ${formatTime(iso)}`);
+      setEditingPerson(null);
     } finally {
       setSavingId(null);
     }
@@ -118,36 +188,69 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
 
   return (
     <div className="space-y-4">
-      <div className="surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
-          <p className="mt-1 text-xs font-medium text-ink-400">
-            اختر مكان وجود الشخص ثم اضغط اسمه؛ سيُثبت حضوره في حساب الفرع المختار فقط.
-          </p>
-          <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
-            <MapPin className="size-3.5" />
-            الاختيار الحالي: {attendanceBranch}
-            {attendanceBranch !== currentBranch && ' · سيظهر تأكيد أنه سُجّل في الفرع الآخر'}
-          </p>
+      <div className="surface flex flex-col gap-4 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
+            <p className="mt-1 text-xs font-medium text-ink-400">
+              اختر مكان وجود الشخص ثم اضغط اسمه؛ سيُثبت حضوره في حساب الفرع المختار فقط.
+            </p>
+            <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
+              <MapPin className="size-3.5" />
+              الاختيار الحالي: {attendanceBranch}
+              {attendanceBranch !== currentBranch && ' · سيظهر تأكيد أنه سُجّل في الفرع الآخر'}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 shrink-0">
+            {(['SITE', 'RESTA'] as const).map((branch) => (
+              <button
+                key={branch}
+                type="button"
+                disabled={savingId !== null}
+                onClick={() => setAttendanceBranch(branch)}
+                aria-pressed={attendanceBranch === branch}
+                className={cn(
+                  'rounded-xl border px-5 py-2.5 text-sm font-black transition disabled:cursor-wait disabled:opacity-60',
+                  attendanceBranch === branch
+                    ? 'border-brand-600 bg-brand-600 text-white'
+                    : 'border-ink-200 bg-white text-ink-600 hover:border-brand-300',
+                )}
+              >
+                {branch}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          {(['SITE', 'RESTA'] as const).map((branch) => (
+
+        {/* time control */}
+        <div className="flex flex-col gap-2 rounded-xl border border-ink-100 bg-ink-50/70 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <span className="grid size-8 place-items-center rounded-lg bg-white text-ink-500 shadow-sm ring-1 ring-ink-100">
+              <Clock3 className="size-4" />
+            </span>
+            <div>
+              <p className="text-[12px] font-extrabold text-ink-900">وقت الحضور عند التحضير</p>
+              <p className="text-[11px] font-medium text-ink-400">الافتراضي هو وقت التحضير الآن، ويمكنك تغييره قبل تسجيل أي شخص</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="time"
+              value={defaultTimeStr}
+              onChange={(e) => setDefaultTimeStr(e.target.value || nowTimeStr())}
+              className="field w-[130px] py-2 text-center text-[14px] font-bold"
+              aria-label="وقت الحضور"
+            />
             <button
-              key={branch}
               type="button"
-              disabled={savingId !== null}
-              onClick={() => setAttendanceBranch(branch)}
-              aria-pressed={attendanceBranch === branch}
-              className={cn(
-                'rounded-xl border px-5 py-2.5 text-sm font-black transition disabled:cursor-wait disabled:opacity-60',
-                attendanceBranch === branch
-                  ? 'border-brand-600 bg-brand-600 text-white'
-                  : 'border-ink-200 bg-white text-ink-600 hover:border-brand-300',
-              )}
+              onClick={refreshDefaultToNow}
+              className="btn btn-neutral px-3 py-2 text-[12px]"
+              title="العودة للوقت الحالي"
             >
-              {branch}
+              <Clock className="size-3.5" />
+              الآن
             </button>
-          ))}
+          </div>
         </div>
       </div>
 
@@ -238,23 +341,23 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                           ? busy
                             ? `مشغول الآن في ${currentBranch} — لا يمكن نقله قبل إنهاء المقابلة`
                             : present
-                              ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch}`
-                              : `اضغط لتسجيله في فرع ${attendanceBranch} فقط`
+                              ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} بوقت ${formatTime(defaultTimeISO)}`
+                              : `اضغط لتسجيله في فرع ${attendanceBranch} بوقت ${formatTime(defaultTimeISO)}`
                           : busy
                             ? 'مشغول الآن مع عميل'
                             : present
                               ? person.isManager
                                 ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
                                 : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
-                              : 'لم يحضر';
+                              : `لم يحضر — سيُسجل بوقت ${formatTime(defaultTimeISO)}`;
 
                         const registerOrMove = () => {
                           if (selectedOtherBranch) {
-                            void runAttendanceAction(person, onToggle);
+                            void runAttendanceAction(person, onToggle, true);
                           } else if (busy) {
-                            void runAttendanceAction(person, onFree);
+                            void runAttendanceAction(person, onFree, false);
                           } else {
-                            void runAttendanceAction(person, onToggle);
+                            void runAttendanceAction(person, onToggle, true);
                           }
                         };
 
@@ -323,6 +426,20 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                               </p>
                             </button>
 
+                            {/* edit time */}
+                            {present && (
+                              <button
+                                type="button"
+                                disabled={saving}
+                                onClick={() => openEditTime(person)}
+                                title="تعديل وقت الحضور"
+                                aria-label={`تعديل وقت حضور ${person.name}`}
+                                className="grid size-9 shrink-0 place-items-center rounded-xl border border-ink-200 bg-white text-ink-400 transition hover:border-brand-300 hover:text-brand-600 disabled:cursor-wait disabled:opacity-60"
+                              >
+                                <Edit3 className="size-4" strokeWidth={2.2} />
+                              </button>
+                            )}
+
                             {/* copy */}
                             {present && (
                               <button
@@ -349,7 +466,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
                               <button
                                 type="button"
                                 disabled={saving}
-                                onClick={() => void runAttendanceAction(person, onFree)}
+                                onClick={() => void runAttendanceAction(person, onFree, false)}
                                 className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px] disabled:cursor-wait"
                               >
                                 إنهاء
@@ -383,6 +500,52 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, heads, 
             <MapPin className="size-6 text-brand-600" strokeWidth={2.2} />
             <span className="font-display text-[16px] font-black text-ink-900">نسخ بيان فرع {currentBranch}</span>
           </button>
+        </div>
+      </Modal>
+
+      {/* Edit attendance time modal */}
+      <Modal
+        open={!!editingPerson}
+        onClose={() => setEditingPerson(null)}
+        title={editingPerson ? `تعديل وقت حضور ${editingPerson.name}` : 'تعديل وقت الحضور'}
+        subtitle="يمكنك التحكم في وقت حضور أي شخص — الافتراضي هو وقت تحضيره"
+      >
+        <div className="space-y-4 p-5">
+          <div className="rounded-xl border border-ink-100 bg-ink-50/70 p-3">
+            <p className="flex items-center gap-1.5 text-[12px] font-bold text-ink-500">
+              <Clock3 className="size-4" />
+              الوقت الحالي المسجل: {editingPerson ? formatTime(salesState[editingPerson.id]?.checkInTime ?? '') : ''}
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-[12px] font-extrabold text-ink-700">اختر وقت الحضور الجديد</label>
+            <input
+              type="time"
+              value={editTimeStr}
+              onChange={(e) => setEditTimeStr(e.target.value || nowTimeStr())}
+              className="field text-center text-[16px] font-black"
+            />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setEditTimeStr(nowTimeStr())} className="btn btn-neutral flex-1">
+                <Clock className="size-4" />
+                الوقت الحالي الآن
+              </button>
+            </div>
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={() => setEditingPerson(null)} className="btn btn-neutral flex-1">
+              إلغاء
+            </button>
+            <button
+              type="button"
+              onClick={() => void runUpdateTime()}
+              disabled={!!savingId}
+              className="btn btn-primary flex-1 disabled:opacity-60"
+            >
+              {savingId ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+              حفظ الوقت
+            </button>
+          </div>
         </div>
       </Modal>
     </div>

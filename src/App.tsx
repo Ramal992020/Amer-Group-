@@ -55,6 +55,7 @@ import {
   setActiveAccount,
   formatTime,
   changeSalesAttendance,
+  setSalesAttendanceTime,
 } from './lib/walkin';
 import {
   applyOrgChart,
@@ -1271,6 +1272,7 @@ function WalkInApp({
     branch: Branch,
     id: string,
     action: AttendanceAction,
+    at?: string,
   ): Promise<RemoteAttendanceResult> => {
     const config = getSyncConfig(account);
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1278,7 +1280,7 @@ function WalkInApp({
       if (!remote) return { kind: 'failed' };
 
       const base = hydrate({ ...(remote.payload as Partial<PersistedWalkin>), updatedAt: remote.updatedAt });
-      const change = changeSalesAttendance(base.salesState, base.counter, id, action);
+      const change = changeSalesAttendance(base.salesState, base.counter, id, action, at);
       if (change.reason === 'busy') return { kind: 'busy' };
       if (change.reason === 'missing') return { kind: 'missing' };
       if (!change.changed) {
@@ -1302,15 +1304,51 @@ function WalkInApp({
     return { kind: 'failed' };
   };
 
+  const writeBranchAttendanceTime = async (
+    branch: Branch,
+    id: string,
+    timeISO: string,
+  ): Promise<RemoteAttendanceResult> => {
+    const config = getSyncConfig(account);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const remote = await pullRemote(branch, loadPersisted(branch), config);
+      if (!remote) return { kind: 'failed' };
+      const base = hydrate({ ...(remote.payload as Partial<PersistedWalkin>), updatedAt: remote.updatedAt });
+      const change = setSalesAttendanceTime(base.salesState, id, timeISO);
+      if (!change.changed) {
+        return { kind: 'ok', state: base, updatedAt: remote.updatedAt, changed: false };
+      }
+      const stamp = Math.max(syncNow(), remote.updatedAt + 1, (base.updatedAt ?? 0) + 1);
+      const next: PersistedWalkin = {
+        ...base,
+        salesState: change.salesState,
+        updatedAt: stamp,
+      };
+      const result = await pushRemote(branch, next, stamp, config);
+      if (result === 'written') {
+        savePersisted(next, branch);
+        return { kind: 'ok', state: next, updatedAt: stamp, changed: true };
+      }
+      if (result !== 'stale') return { kind: 'failed' };
+    }
+    return { kind: 'failed' };
+  };
+
   /** Apply a non-transfer action to the account currently open on this device. */
-  const changeLocalAttendance = (id: string, action: AttendanceAction): void => {
-    const change = changeSalesAttendance(salesState, counter, id, action);
+  const changeLocalAttendance = (id: string, action: AttendanceAction, at?: string): void => {
+    const change = changeSalesAttendance(salesState, counter, id, action, at);
     if (change.reason === 'busy') {
       toast('warning', 'الشخص مشغول مع عميل الآن');
       return;
     }
     if (!change.changed) return;
     setCounter(change.counter);
+    setSalesState(change.salesState);
+  };
+
+  const updateLocalAttendanceTime = (id: string, timeISO: string): void => {
+    const change = setSalesAttendanceTime(salesState, id, timeISO);
+    if (!change.changed) return;
     setSalesState(change.salesState);
   };
 
@@ -1322,7 +1360,11 @@ function WalkInApp({
    * branch. The active screen adopts its changed row immediately, and the toast
    * explicitly confirms when the selected destination is the other account.
    */
-  const registerAttendanceInBranch = async (id: string, targetBranch: Branch): Promise<void> => {
+  const registerAttendanceInBranch = async (
+    id: string,
+    targetBranch: Branch,
+    at?: string,
+  ): Promise<void> => {
     const person = sales.find((item) => item.id === id);
     const currentBranch = asBranch(account);
     if (!person || !currentBranch) {
@@ -1366,7 +1408,7 @@ function WalkInApp({
         }
       }
 
-      const target = await writeBranchAttendance(targetBranch, id, 'check-in');
+      const target = await writeBranchAttendance(targetBranch, id, 'check-in', at);
       if (target.kind === 'busy') {
         toast('warning', `${person.name} مشغول مع عميل في فرع ${targetBranch}`);
         return;
@@ -1423,7 +1465,53 @@ function WalkInApp({
     }
   };
 
-  const toggleAttendance = async (id: string, targetBranch?: Branch): Promise<void> => {
+  const updateAttendanceTimeInBranch = async (
+    id: string,
+    targetBranch: Branch,
+    timeISO: string,
+  ): Promise<void> => {
+    const person = sales.find((item) => item.id === id);
+    if (!person) {
+      toast('error', 'تعذر العثور على سجل هذا الشخص');
+      return;
+    }
+    if (!syncReadyRef.current) {
+      toast('info', 'انتظر اكتمال المزامنة');
+      return;
+    }
+    if (branchAttendanceInFlightRef.current || pushingRef.current) {
+      toast('info', 'جارٍ حفظ تعديل آخر، حاول بعد لحظات');
+      return;
+    }
+    if (isDirty()) {
+      await flushPushRef.current();
+      if (isDirty()) {
+        toast('info', 'جارٍ مزامنة آخر تعديل، أعد المحاولة بعد لحظات');
+        return;
+      }
+    }
+    branchAttendanceInFlightRef.current = true;
+    try {
+      const result = await writeBranchAttendanceTime(targetBranch, id, timeISO);
+      if (result.kind === 'failed') {
+        toast('error', 'تعذر تحديث وقت الحضور');
+        return;
+      }
+      const currentBranch = asBranch(account);
+      if (targetBranch === currentBranch) {
+        applyRemote({ ...result.state, updatedAt: result.updatedAt } as Record<string, unknown>);
+      }
+      setSyncStatus('synced');
+      setLastSyncAt(Date.now());
+      toast('success', `تم تحديث وقت حضور ${person.name} إلى ${formatTime(timeISO)}`);
+    } catch {
+      toast('error', 'تعذر تحديث وقت الحضور');
+    } finally {
+      branchAttendanceInFlightRef.current = false;
+    }
+  };
+
+  const toggleAttendance = async (id: string, targetBranch?: Branch, at?: string): Promise<void> => {
     const selectedBranch = targetBranch ?? asBranch(account);
     const currentBranch = asBranch(account);
     const state = salesState[id];
@@ -1440,20 +1528,32 @@ function WalkInApp({
       toast('warning', 'أنهِ مقابلة العميل أولاً');
       return;
     }
-    await registerAttendanceInBranch(id, selectedBranch);
+    await registerAttendanceInBranch(id, selectedBranch, at);
   };
 
-  const freeSales = async (id: string, targetBranch?: Branch): Promise<void> => {
+  const freeSales = async (id: string, targetBranch?: Branch, at?: string): Promise<void> => {
     const selectedBranch = targetBranch ?? asBranch(account);
     const currentBranch = asBranch(account);
     if (!selectedBranch || !currentBranch) return;
     // With a different selected branch this is a requested move, not «إنهاء»
     // for the current branch. The transfer guard rejects a person who is busy.
     if (selectedBranch !== currentBranch) {
-      await registerAttendanceInBranch(id, selectedBranch);
+      await registerAttendanceInBranch(id, selectedBranch, at);
       return;
     }
     changeLocalAttendance(id, 'free');
+  };
+
+  const updateAttendanceTime = async (id: string, targetBranch?: Branch, timeISO?: string): Promise<void> => {
+    if (!timeISO) return;
+    const selectedBranch = targetBranch ?? asBranch(account);
+    const currentBranch = asBranch(account);
+    if (!selectedBranch || !currentBranch) return;
+    if (selectedBranch === currentBranch) {
+      updateLocalAttendanceTime(id, timeISO);
+    } else {
+      await updateAttendanceTimeInBranch(id, selectedBranch, timeISO);
+    }
   };
 
   // ── Assignment ──
@@ -2021,6 +2121,7 @@ function WalkInApp({
                     salesState={salesState}
                     onToggle={toggleAttendance}
                     onFree={freeSales}
+                    onUpdateTime={updateAttendanceTime}
                     heads={heads}
                     managers={managers}
                     sales={sales}
