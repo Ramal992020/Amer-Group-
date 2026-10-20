@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Crown, Users, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2, Clock3, Clock, Edit3, LayoutList, LayoutGrid } from 'lucide-react';
+import { Crown, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2, Clock3, Clock, Edit3, LayoutList, LayoutGrid } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from '../lib/walkin';
 import { formatTime, hydrate, loadPersisted, otherWorkspace } from '../lib/walkin';
 import { getSyncConfig, pullRemote } from '../lib/sync';
@@ -26,6 +26,28 @@ const loadLayoutMode = (): LayoutMode => {
     return 'vertical';
   }
 };
+
+/**
+ * Team identity colours.
+ *
+ * Each team (manager) gets a solid colour band + a matching border, so a block
+ * of names can never be mistaken for the team above/below it. The colour is
+ * picked from the team's position in the roster (not from the filtered list),
+ * so it never changes while searching or when a team has nobody present.
+ * Classes stay as full literals so Tailwind emits them.
+ */
+const TEAM_THEMES = [
+  { band: 'bg-brand-600', border: 'border-brand-200' },
+  { band: 'bg-sky-600', border: 'border-sky-200' },
+  { band: 'bg-emerald-600', border: 'border-emerald-200' },
+  { band: 'bg-violet-600', border: 'border-violet-200' },
+  { band: 'bg-orange-500', border: 'border-orange-200' },
+  { band: 'bg-teal-600', border: 'border-teal-200' },
+  { band: 'bg-rose-600', border: 'border-rose-200' },
+  { band: 'bg-indigo-600', border: 'border-indigo-200' },
+] as const;
+
+const teamThemeAt = (index: number) => TEAM_THEMES[((index % TEAM_THEMES.length) + TEAM_THEMES.length) % TEAM_THEMES.length];
 
 interface Props {
   account: string;
@@ -372,6 +394,14 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
           <p className="mt-1 text-xs font-medium text-ink-400">
             اضغط على أي شخص لتختار وقت حضوره من خانة الوقت — الافتراضي هو وقت التحضير الآن.
           </p>
+          <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-ink-500">
+            <span className="inline-flex items-center gap-1">
+              <span className="size-2.5 rounded-sm bg-brand-600" />
+              <span className="size-2.5 rounded-sm bg-sky-600" />
+              <span className="size-2.5 rounded-sm bg-emerald-600" />
+            </span>
+            كل تيم ليه شريط لون منفصل — أسماء كل تيم جوه كارت واحد، والفاصل بينهم واضح.
+          </p>
           <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
             <MapPin className="size-3.5" />
             الفرع المختار: {attendanceBranch}
@@ -461,25 +491,62 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                 </span>
                 <div className="min-w-0">
                   <p className="truncate font-display text-[16px] font-extrabold leading-tight text-ink-900">{head.name}</p>
-                  <p className="text-[11px] font-semibold text-ink-400">Head Manager</p>
+                  <p className="text-[11px] font-semibold text-ink-400">
+                    Head Manager · {headManagers.length} تيمات
+                  </p>
                 </div>
               </div>
               <span className="badge badge-gray tnum shrink-0">{present}/{headSales.length} حاضر</span>
             </div>
 
-            <div className="space-y-4 p-3.5">
-              {headManagers.map((mgr) => {
-                const members = sales.filter((s) => s.managerId === mgr.id).filter(matches);
+            <div className="space-y-3.5 p-3 sm:p-3.5">
+              {headManagers.map((mgr, mi) => {
+                const allMembers = sales.filter((s) => s.managerId === mgr.id);
+                const members = allMembers.filter(matches);
                 if (members.length === 0) return null;
+
+                // One identity per team: index in the whole roster (stable while
+                // searching) with a fallback to the position inside this head.
+                const rosterIndex = managers.findIndex((m) => m.id === mgr.id);
+                const teamNumber = (rosterIndex >= 0 ? rosterIndex : mi) + 1;
+                const theme = teamThemeAt(teamNumber - 1);
+                const teamPresent = allMembers.filter((s) => salesState[s.id]?.status !== 'absent').length;
+
                 return (
-                  <div key={mgr.id}>
-                    <div className="mb-2 flex items-center gap-1.5 px-1">
-                      <Users className="size-3.5 text-ink-300" strokeWidth={2.2} />
-                      <span className="text-[12px] font-extrabold text-ink-500">تيم {mgr.name}</span>
-                      <span className="h-px flex-1 bg-ink-100" />
+                  <div
+                    key={mgr.id}
+                    // The card itself is the separator between teams: coloured
+                    // band + coloured border + a gap no name can cross.
+                    className={cn('overflow-hidden rounded-xl border-2 bg-white shadow-[0_1px_2px_rgba(20,23,31,0.04)]', theme.border)}
+                  >
+                    <div className={cn('flex items-center gap-2.5 px-3 py-2.5 text-white', theme.band)}>
+                      <span
+                        className="tnum grid size-8 shrink-0 place-items-center rounded-lg bg-white/20 text-[12.5px] font-black"
+                        aria-hidden="true"
+                      >
+                        {String(teamNumber).padStart(2, '0')}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="flex min-w-0 items-baseline gap-1.5 text-[14.5px] font-black leading-tight">
+                          <span className="truncate">تيم {mgr.name}</span>
+                          {mgr.ar && mgr.ar !== mgr.name && (
+                            <span className="truncate text-[10.5px] font-bold text-white/75">{mgr.ar}</span>
+                          )}
+                        </p>
+                        <p className="mt-0.5 truncate text-[10.5px] font-semibold text-white/80">
+                          {head.name}
+                          {mgr.phone ? ` · ${mgr.phone}` : ''}
+                        </p>
+                      </div>
+                      <span className="tnum shrink-0 rounded-full bg-white/20 px-2.5 py-1 text-[11px] font-extrabold">
+                        {teamPresent}/{allMembers.length} حاضر
+                      </span>
                     </div>
-                    <div className={layout === 'grid' ? 'grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4' : 'space-y-2'}>
-                      {members.map((person) => renderPersonCard(person))}
+
+                    <div className="bg-ink-50/40 p-2.5">
+                      <div className={layout === 'grid' ? 'grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4' : 'space-y-2'}>
+                        {members.map((person) => renderPersonCard(person))}
+                      </div>
                     </div>
                   </div>
                 );
