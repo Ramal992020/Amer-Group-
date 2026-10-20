@@ -9,6 +9,8 @@ export interface HeadGroup {
   id: string;
   name: string;
   ar: string;
+  /** When `true`, disabled from «الهيكل» — hidden across the whole app until re-enabled. */
+  disabled?: boolean;
 }
 
 export interface ManagerTeam {
@@ -18,6 +20,8 @@ export interface ManagerTeam {
   headId: string;
   /** The manager's own mobile number — printed in the attendance Excel. */
   phone?: string;
+  /** When `true`, disabled from «الهيكل» — hidden across the whole app until re-enabled. */
+  disabled?: boolean;
 }
 
 export interface SalesPerson {
@@ -30,6 +34,13 @@ export interface SalesPerson {
   phone?: string;
   /** Personal shift start; defaults to 10:00 for existing and new members. */
   shiftTime?: string;
+  /**
+   * Active/disabled flag managed from «الهيكل»:
+   *  • `true`      → disabled (behaves as if the person does not exist anywhere on the app);
+   *  • `false`     → explicitly active (appears in attendance & holds full permissions);
+   *  • `undefined` → default active member.
+   */
+  disabled?: boolean;
 }
 
 export type SalesStatus = 'absent' | 'available' | 'busy';
@@ -167,6 +178,82 @@ export const rotationMembers = (managerId: string): SalesPerson[] =>
 
 export const headMembers = (headId: string): SalesPerson[] =>
   SALES.filter((s) => s.headId === headId);
+
+// ───────────────── Active vs disabled members («الهيكل» toggle) ─────────────────
+
+/** True when a Head was disabled from «الهيكل». */
+export const isHeadDisabled = (head?: HeadGroup | null): boolean => Boolean(head?.disabled);
+
+/**
+ * True when a manager team is effectively disabled:
+ *  • the team itself was disabled (`team.disabled`),
+ *  • its Head was disabled (`head.disabled`), or
+ *  • every member of the team in `sales` was disabled (leaving no active member at all).
+ */
+export const isTeamDisabled = (
+  team: ManagerTeam,
+  sales?: readonly SalesPerson[],
+  heads?: readonly HeadGroup[],
+): boolean => {
+  if (team.disabled) return true;
+  if (heads && heads.find((h) => h.id === team.headId)?.disabled) return true;
+  if (sales) {
+    const members = sales.filter((s) => s.managerId === team.id);
+    if (members.length > 0 && members.every((s) => Boolean(s.disabled))) return true;
+  }
+  return false;
+};
+
+/**
+ * True when a person is disabled (directly, or through their disabled team / Head).
+ * A disabled person behaves as if they do not exist anywhere on the app.
+ */
+export const isPersonDisabled = (
+  person: SalesPerson,
+  managers?: readonly ManagerTeam[],
+  heads?: readonly HeadGroup[],
+): boolean => {
+  if (person.disabled) return true;
+  const team = managers?.find((m) => m.id === person.managerId);
+  if (team?.disabled) return true;
+  const headId = team?.headId ?? person.headId;
+  if (heads?.find((h) => h.id === headId)?.disabled) return true;
+  return false;
+};
+
+/** Filter an org roster down to active (non-disabled) Heads, teams and people. */
+export function activeOrg(
+  heads: readonly HeadGroup[],
+  managers: readonly ManagerTeam[],
+  sales: readonly SalesPerson[],
+): { heads: HeadGroup[]; managers: ManagerTeam[]; sales: SalesPerson[] } {
+  return {
+    heads: heads.filter((h) => !isHeadDisabled(h)),
+    managers: managers.filter((m) => !isTeamDisabled(m, sales, heads)),
+    sales: sales.filter((s) => !isPersonDisabled(s, managers, heads)),
+  };
+}
+
+/**
+ * Force-clear any active/busy check-in for the given person IDs while preserving
+ * historical turn counters (`walkCount`, `coverCount`, `lastServedAt`).
+ */
+export function clearSalesAttendance(
+  salesState: Record<string, SalesState>,
+  ids: Iterable<string>,
+): { salesState: Record<string, SalesState>; changed: boolean } {
+  let changed = false;
+  const next: Record<string, SalesState> = { ...salesState };
+  for (const id of ids) {
+    const cur = next[id];
+    if (!cur) continue;
+    if (cur.status !== 'absent' || cur.checkInOrder !== null || cur.checkInTime !== null) {
+      next[id] = { ...cur, status: 'absent', checkInOrder: null, checkInTime: null };
+      changed = true;
+    }
+  }
+  return { salesState: changed ? next : salesState, changed };
+}
 
 // ───────────────────────── State helpers ─────────────────────────
 
@@ -547,14 +634,19 @@ export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
 
   const mergedState: Record<string, SalesState> = {};
   salesList.forEach((s) => {
-    mergedState[s.id] = parsed.salesState?.[s.id] ?? {
-      status: 'absent',
-      checkInOrder: null,
-      checkInTime: null,
-      walkCount: 0,
-      coverCount: 0,
-      lastServedAt: null,
-    };
+    const raw = parsed.salesState?.[s.id];
+    mergedState[s.id] = raw
+      ? isPersonDisabled(s, managers, heads)
+        ? { ...raw, status: 'absent', checkInOrder: null, checkInTime: null }
+        : raw
+      : {
+          status: 'absent',
+          checkInOrder: null,
+          checkInTime: null,
+          walkCount: 0,
+          coverCount: 0,
+          lastServedAt: null,
+        };
   });
 
   return {
@@ -669,9 +761,17 @@ export function mirrorOrgChart(account: string, chart: OrgChart, revision: numbe
   // Never downgrade the other branch: its bucket may already hold a roster
   // that was pulled from the cloud (or edited) after this one was saved.
   if ((state.orgRevision ?? 0) > revision) return;
+  const disabledIds = chart.sales
+    .filter((s) => isPersonDisabled(s, chart.managers, chart.heads))
+    .map((s) => s.id);
+  const nextSalesState =
+    disabledIds.length > 0
+      ? clearSalesAttendance(state.salesState, disabledIds).salesState
+      : state.salesState;
   savePersisted(
     {
       ...state,
+      salesState: nextSalesState,
       customHeads: chart.heads,
       customManagers: chart.managers,
       customSales: chart.sales,
@@ -739,6 +839,7 @@ function candidatesOf(
   return members
     .filter(
       (s) =>
+        !s.disabled &&
         !s.isManager &&
         salesState[s.id]?.status === 'available' &&
         !excludeIds.includes(s.id),
@@ -946,15 +1047,21 @@ function teamForAutomaticSlot(
   managersList: ManagerTeam[],
   salesList: SalesPerson[],
 ): ManagerTeam | null {
-  const byId = managersList.find((m) => m.id === slot.id);
+  const byId = managersList.find((m) => m.id === slot.id && !isTeamDisabled(m, salesList));
   if (byId) return byId;
-  const byName = managersList.find((m) => automaticTeamIndex(m.id, m.name) === index);
+  const byName = managersList.find(
+    (m) => !isTeamDisabled(m, salesList) && automaticTeamIndex(m.id, m.name) === index,
+  );
   if (byName) return byName;
   const wanted = normalizeTeamName(slot.name);
   const member = salesList.find(
-    (s) => normalizeTeamName(s.name) === wanted || normalizeTeamName(s.id) === normalizeTeamName(slot.id),
+    (s) =>
+      !s.disabled &&
+      (normalizeTeamName(s.name) === wanted || normalizeTeamName(s.id) === normalizeTeamName(slot.id)),
   );
-  return member ? managersList.find((m) => m.id === member.managerId) ?? null : null;
+  if (!member) return null;
+  const team = managersList.find((m) => m.id === member.managerId) ?? null;
+  return team && !isTeamDisabled(team, salesList) ? team : null;
 }
 
 /**
@@ -973,11 +1080,12 @@ function resolveCycle(
   cycle?: TeamCycleSettings | null,
   salesList: SalesPerson[] = SALES,
 ): (ManagerTeam | null)[] {
+  const activeManagers = managersList.filter((m) => !isTeamDisabled(m, salesList));
   const settings = normalizeTeamCycle(cycle);
   // Custom mode is authoritative even when the list ends up empty: the editor
   // blocks removing the last team, so an empty cycle here is an explicit choice.
   if (settings.mode === 'custom') {
-    const byId = new Map(managersList.map((m) => [m.id, m] as const));
+    const byId = new Map(activeManagers.map((m) => [m.id, m] as const));
     const seen = new Set<string>();
     const ordered: ManagerTeam[] = [];
     settings.order.forEach((id) => {
@@ -991,7 +1099,7 @@ function resolveCycle(
   }
   const used = new Set<string>();
   return AUTOMATIC_TEAM_ORDER.map((slot, index) => {
-    const team = teamForAutomaticSlot(slot, index, managersList, salesList);
+    const team = teamForAutomaticSlot(slot, index, activeManagers, salesList);
     // Two slots resolving to the same team would make it rotate twice a round.
     if (!team || used.has(team.id)) return null;
     used.add(team.id);
@@ -1032,6 +1140,7 @@ export function availableTeamMembers(
   return salesList
     .filter(
       (s) =>
+        !s.disabled &&
         s.managerId === managerId &&
         salesState[s.id]?.status === 'available' &&
         !excludeIds.includes(s.id),
@@ -1107,15 +1216,16 @@ export function computeTurnPlan(
   options: RotationOptions = {},
 ): TurnPlan {
   const empty: TurnPlan = { onTurn: null, serving: null, shiftedTeams: [] };
+  const active = activeOrg(headsList, managersList, salesList);
   const cycleSettings = normalizeTeamCycle(options.cycle);
   const isCustom = cycleSettings.mode === 'custom';
-  const cycle = resolveCycle(managersList, cycleSettings, salesList);
+  const cycle = resolveCycle(active.managers, cycleSettings, active.sales);
   if (cycle.every((team) => !team)) return empty;
   const indexInCycle = (managerId: string, managerName: string): number =>
     cycleIndexOf(cycle, managerId, managerName, isCustom);
   const excluded = options.skippedIds ?? [];
   const hasMembers = (team: ManagerTeam) =>
-    availableTeamMembers(team.id, salesState, salesList, excluded).length > 0;
+    availableTeamMembers(team.id, salesState, active.sales, excluded).length > 0;
 
   const carried = options.carryOver;
   const carriedIndex =
@@ -1150,8 +1260,8 @@ export function computeTurnPlan(
     const team = cycle[(onTurnIndex + offset) % cycle.length];
     if (!team) continue;
     if (!hasMembers(team)) {
-      const head = headsList.find((h) => h.id === team.headId);
-      const members = salesList.filter((s) => s.managerId === team.id);
+      const head = active.heads.find((h) => h.id === team.headId);
+      const members = active.sales.filter((s) => s.managerId === team.id);
       const busy = members.some((s) => salesState[s.id]?.status === 'busy');
       shiftedTeams.push({
         managerId: team.id,
@@ -1163,16 +1273,16 @@ export function computeTurnPlan(
       continue;
     }
     if (carryOnTurn && team.id === carriedTeam?.id) {
-      const person = carried?.salesId ? salesList.find((s) => s.id === carried.salesId) ?? null : null;
+      const person = carried?.salesId ? active.sales.find((s) => s.id === carried.salesId) ?? null : null;
       const present =
         person && person.managerId === team.id && salesState[person.id]?.status === 'available'
           ? person
           : null;
-      serving = teamTurn(team, `دور أمس المرحّل • تيم ${team.name}`, false, present, headsList);
+      serving = teamTurn(team, `دور أمس المرحّل • تيم ${team.name}`, false, present, active.heads);
     } else {
       const reason =
         offset === 0 ? `دور تيم ${team.name}` : `تخطي الفرق غير المتاحة — دور تيم ${team.name}`;
-      serving = teamTurn(team, reason, offset > 0, null, headsList);
+      serving = teamTurn(team, reason, offset > 0, null, active.heads);
     }
     break;
   }
@@ -1337,7 +1447,9 @@ export function computeNextTurn(
     );
   }
 
-  const anyAvailable = salesList.some(
+  const active = activeOrg(headsList, managersList, salesList);
+
+  const anyAvailable = active.sales.some(
     (s) => !s.isManager && salesState[s.id]?.status === 'available' && !excludeIds.includes(s.id),
   );
   if (!anyAvailable) return null;
@@ -1350,49 +1462,49 @@ export function computeNextTurn(
       : 'khaled'
     : sideOf(startingHead);
 
-  const mgrNameOf = (id: string) => managersList.find((m) => m.id === id)?.name ?? id;
+  const mgrNameOf = (id: string) => active.managers.find((m) => m.id === id)?.name ?? id;
 
   if (expectedSide === 'khaled') {
-    const pick = pickForKaled(salesState, history, excludeIds, salesList, managersList);
+    const pick = pickForKaled(salesState, history, excludeIds, active.sales, active.managers);
     if (pick) {
       const reason =
         history.length === 0
           ? `بداية اليوم من تيم ${mgrNameOf(pick.managerId)} • أولوية الحضور`
           : `تناوب Head × Head • دور تيم ${mgrNameOf(pick.managerId)} (خالد يوسف)`;
-      return toTurn(pick, reason, false, headsList, managersList);
+      return toTurn(pick, reason, false, active.heads, active.managers);
     }
   } else {
-    const pick = pickForOtherHead(salesState, history, excludeIds, salesList, headsList);
+    const pick = pickForOtherHead(salesState, history, excludeIds, active.sales, active.heads);
     if (pick) {
       const reason =
         history.length === 0
           ? `بداية اليوم من تيم ${pick.head.ar} • أولوية الحضور`
           : `تناوب Head × Head • دور تيم ${pick.head.ar}`;
-      return toTurn(pick.sales, reason, false, headsList, managersList);
+      return toTurn(pick.sales, reason, false, active.heads, active.managers);
     }
   }
 
   // Expected side is empty → serve the other side instead.
   if (expectedSide === 'khaled') {
-    const fallback = pickForOtherHead(salesState, history, excludeIds, salesList, headsList);
+    const fallback = pickForOtherHead(salesState, history, excludeIds, active.sales, active.heads);
     if (fallback) {
       return toTurn(
         fallback.sales,
         `لا يوجد متاح في تيم خالد يوسف — تم التحويل إلى تيم ${fallback.head.ar}`,
         true,
-        headsList,
-        managersList,
+        active.heads,
+        active.managers,
       );
     }
   } else {
-    const fallback = pickForKaled(salesState, history, excludeIds, salesList, managersList);
+    const fallback = pickForKaled(salesState, history, excludeIds, active.sales, active.managers);
     if (fallback) {
       return toTurn(
         fallback,
-        `لا يوجد متاح في تيم ${headsList.find((h) => h.id !== 'khaled')?.ar ?? 'الهيد الآخر'} — تم التحويل إلى تيم خالد يوسف`,
+        `لا يوجد متاح في تيم ${active.heads.find((h) => h.id !== 'khaled')?.ar ?? 'الهيد الآخر'} — تم التحويل إلى تيم خالد يوسف`,
         true,
-        headsList,
-        managersList,
+        active.heads,
+        active.managers,
       );
     }
   }
@@ -1418,17 +1530,18 @@ export function predictFullRound(
   options: RotationOptions = {},
 ): ComputedTurn[] {
   const excluded = options.skippedIds ?? [];
+  const active = activeOrg(headsList, managersList, salesList);
 
   if (usesFixedTeamRotation(options.workspace)) {
     // The seed is redundant here: a pending carry-over is expressed by
     // `options.carryOver`, so the round is derived from state alone.
-    const current = computeNextTeam(salesState, history, managersList, salesList, headsList, options);
-    return teamOrderFrom(managersList, current?.managerId, options.cycle, salesList)
-      .filter((team) => availableTeamMembers(team.id, salesState, salesList, excluded).length > 0)
+    const current = computeNextTeam(salesState, history, active.managers, active.sales, active.heads, options);
+    return teamOrderFrom(active.managers, current?.managerId, options.cycle, active.sales)
+      .filter((team) => availableTeamMembers(team.id, salesState, active.sales, excluded).length > 0)
       .map((team, index) =>
         index === 0 && current
           ? toTeamComputedTurn(current)
-          : toTeamComputedTurn(teamTurn(team, `دور تيم ${team.name}`, false, null, headsList)),
+          : toTeamComputedTurn(teamTurn(team, `دور تيم ${team.name}`, false, null, active.heads)),
       );
   }
 
@@ -1456,9 +1569,9 @@ export function predictFullRound(
 
   if (seedTurn) push(seedTurn, 'round-seed');
 
-  const total = salesList.filter((s) => !s.isManager && salesState[s.id]?.status === 'available').length;
+  const total = active.sales.filter((s) => !s.isManager && salesState[s.id]?.status === 'available').length;
   for (let i = 0; i < total + 1 && out.length < total + (seedTurn ? 1 : 0); i++) {
-    const t = computeNextTurn(salesState, simHistory, startingHead, [...served], headsList, managersList, salesList, options);
+    const t = computeNextTurn(salesState, simHistory, startingHead, [...served], active.heads, active.managers, active.sales, options);
     if (!t) break;
     push(t, `round-${i}`);
   }

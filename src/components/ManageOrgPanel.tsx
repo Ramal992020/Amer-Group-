@@ -1,12 +1,15 @@
 import { useState } from 'react';
-import { Check, Crown, Network, Pencil, Plus, Trash2, UserPlus, Users, X } from 'lucide-react';
+import { Ban, Check, Crown, Network, Pencil, Plus, RotateCcw, Trash2, UserCheck, UserPlus, Users, X } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson } from '../lib/walkin';
+import { isHeadDisabled, isPersonDisabled, isTeamDisabled } from '../lib/walkin';
+import { isDefaultHiddenFromAttendance } from '../lib/attendanceVisibility';
 import { SectionTitle, useToast } from './ui';
 import { cn } from '../utils/cn';
 
 interface AddProps {
   heads: HeadGroup[];
   managers: ManagerTeam[];
+  sales: SalesPerson[];
   onAddHead: (name: string, ar?: string) => void;
   onAddManager: (name: string, headId: string, ar?: string, phone?: string) => void;
   onAddSales: (name: string, managerId: string, headId: string, phone?: string) => void;
@@ -21,6 +24,9 @@ interface Props {
   onRenameSales: (id: string, name: string) => void;
   onUpdateSalesDetails: (id: string, phone: string, shiftTime: string) => void;
   onUpdateManagerDetails: (id: string, phone: string) => void;
+  onToggleHeadDisabled: (id: string, disabled: boolean) => void;
+  onToggleManagerDisabled: (id: string, disabled: boolean) => void;
+  onToggleSalesDisabled: (id: string, disabled: boolean) => void;
   onDeleteHead: (id: string) => void;
   onDeleteManager: (id: string) => void;
   onDeleteSales: (id: string) => void;
@@ -167,19 +173,21 @@ function NameEditor({
  * the new member appears in BOTH branches (SITE & RESTA). Attendance stays per
  * branch: the new person starts as «لم يحضر» in each one.
  */
-export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAddSales }: AddProps) {
+export function AddMemberPanel({ heads, managers, sales, onAddHead, onAddManager, onAddSales }: AddProps) {
   const toast = useToast();
   const [mode, setMode] = useState<Kind>('sales');
 
   const [headName, setHeadName] = useState('');
   const [headAr, setHeadAr] = useState('');
   const [mgrName, setMgrName] = useState('');
-  const [mgrHeadId, setMgrHeadId] = useState(heads[0]?.id || '');
+  const [mgrHeadId, setMgrHeadId] = useState(heads.find((h) => !h.disabled)?.id || heads[0]?.id || '');
   const [mgrAr, setMgrAr] = useState('');
   const [salesName, setSalesName] = useState('');
   const [salesPhone, setSalesPhone] = useState('');
   const [managerPhone, setManagerPhone] = useState('');
-  const [salesMgrId, setSalesMgrId] = useState(managers[0]?.id || '');
+  const [salesMgrId, setSalesMgrId] = useState(
+    managers.find((m) => !isTeamDisabled(m, sales, heads))?.id || managers[0]?.id || '',
+  );
 
 
   const handleAddHead = (e: React.FormEvent) => {
@@ -269,7 +277,7 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
                   const h = heads.find((x) => x.id === m.headId);
                   return (
                     <option key={m.id} value={m.id}>
-                      {m.name} {h ? `(${h.name})` : ''}
+                      {m.name} {h ? `(${h.name})` : ''}{isTeamDisabled(m, sales, heads) ? ' — معطّل' : ''}
                     </option>
                   );
                 })}
@@ -306,7 +314,7 @@ export function AddMemberPanel({ heads, managers, onAddHead, onAddManager, onAdd
               <select value={mgrHeadId} onChange={(e) => setMgrHeadId(e.target.value)} className="field">
                 {heads.map((h) => (
                   <option key={h.id} value={h.id}>
-                    {h.name}
+                    {h.name}{h.disabled ? ' — معطّل' : ''}
                   </option>
                 ))}
               </select>
@@ -365,12 +373,26 @@ export function ManageOrgPanel({
   onRenameSales,
   onUpdateSalesDetails,
   onUpdateManagerDetails,
+  onToggleHeadDisabled,
+  onToggleManagerDisabled,
+  onToggleSalesDisabled,
   onDeleteHead,
   onDeleteManager,
   onDeleteSales,
 }: Props) {
   const toast = useToast();
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [filterMode, setFilterMode] = useState<'all' | 'active' | 'disabled'>('all');
+
+  const isHiddenByDefault = (person: SalesPerson): boolean =>
+    !isPersonDisabled(person, managers, heads) &&
+    person.disabled === undefined &&
+    isDefaultHiddenFromAttendance(person);
+
+  const disabledSalesCount = sales.filter((s) => isPersonDisabled(s, managers, heads)).length;
+  const hiddenSalesCount = sales.filter((s) => isHiddenByDefault(s)).length;
+  const activeSalesCount = sales.length - disabledSalesCount;
+  const inactiveFilterCount = disabledSalesCount + hiddenSalesCount;
 
   const startEdit = (kind: Kind, id: string, name: string, ar = '', phone = '', shiftTime = '10:00') => {
     setDraft({ kind, id, name, ar, phone, shiftTime });
@@ -395,29 +417,89 @@ export function ManageOrgPanel({
     setDraft(null);
   };
 
+  const subtitle =
+    disabledSalesCount > 0
+      ? `${heads.length} Heads · ${managers.length} تيمات · ${activeSalesCount} نشط · ${disabledSalesCount} معطّل`
+      : `${heads.length} Heads · ${managers.length} تيمات · ${sales.length} أفراد`;
+
   return (
     <section className="surface anim-fade-up p-4">
       <SectionTitle
         title="الهيكل الحالي"
-        subtitle={`${heads.length} Heads · ${managers.length} تيمات · ${sales.length} أفراد`}
+        subtitle={subtitle}
         icon={<Network className="size-4.5" strokeWidth={2.1} />}
       />
 
       <p className="mb-3 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-[11px] font-semibold leading-relaxed text-emerald-700">
         <Pencil className="mt-0.5 size-3.5 shrink-0" />
         <span>
-          للتعديل على أي اسم أو رقم موبايل اضغط أيقونة القلم بجانبه — المدير بيتعدل بنفس الطريقة زي السيلز
-          (الاسم + الرقم + الشيفت)، ورقمه بيطلع في عمود Mobile Number في ملف الحضور. التعديل بيحصل على نفس
-          الشخص: الحضور والعدّاد وترتيب الدور والسجل كلهم بيفضلوا زي ما هم. والاسم الجديد بيظهر في الفرعين
+          للتعديل اضغط أيقونة القلم بجانب الاسم، ولإخفاء أي شخص مؤقتاً من الحضور والأدوار والتطبيق بالكامل بدون حذف
+          بياناته اضغط «تعطيل» — وعند الضغط على «تفعيل» يظهر اسمه في الحضور ويمتلك كل الصلاحيات، والتحديث يظهر في الفرعين
           SITE و RESTA.
         </span>
       </p>
 
+      {/* فلتر سريع لعرض الكل أو النشطين أو المعطّلين */}
+      <div className="mb-3 grid grid-cols-3 gap-1.5 rounded-xl bg-ink-100 p-1">
+        {[
+          { id: 'all' as const, label: `الكل (${sales.length})` },
+          { id: 'active' as const, label: `النشطون (${activeSalesCount})` },
+          { id: 'disabled' as const, label: `المعطّلون (${inactiveFilterCount})` },
+        ].map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => setFilterMode(item.id)}
+            aria-pressed={filterMode === item.id}
+            className={cn(
+              'rounded-lg py-1.5 text-[11.5px] font-extrabold transition',
+              filterMode === item.id
+                ? 'bg-brand-600 text-white shadow-[0_3px_8px_-2px_rgba(227,6,19,0.45)]'
+                : 'text-ink-500 hover:bg-white hover:text-ink-900',
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
       <div className="space-y-3">
         {heads.map((h) => {
+          const headDisabled = isHeadDisabled(h);
           const hMgrs = managers.filter((m) => m.headId === h.id);
+          const matchesFilter = (s: SalesPerson) => {
+            const off = isPersonDisabled(s, managers, heads) || isHiddenByDefault(s);
+            if (filterMode === 'disabled') return off;
+            if (filterMode === 'active') return !isPersonDisabled(s, managers, heads);
+            return true;
+          };
+          const headHasMatchingContent =
+            filterMode === 'all' ||
+            (filterMode === 'disabled' &&
+              (headDisabled ||
+                hMgrs.some(
+                  (m) =>
+                    isTeamDisabled(m, sales, heads) ||
+                    sales.some((s) => s.managerId === m.id && matchesFilter(s)),
+                ))) ||
+            (filterMode === 'active' &&
+              !headDisabled &&
+              hMgrs.some(
+                (m) =>
+                  !isTeamDisabled(m, sales, heads) ||
+                  sales.some((s) => s.managerId === m.id && matchesFilter(s)),
+              ));
+
+          if (!headHasMatchingContent) return null;
+
           return (
-            <div key={h.id} className="overflow-hidden rounded-xl border border-ink-100">
+            <div
+              key={h.id}
+              className={cn(
+                'overflow-hidden rounded-xl border transition',
+                headDisabled ? 'border-dashed border-ink-300 bg-ink-50/40' : 'border-ink-100',
+              )}
+            >
               {draft && draft.kind === 'head' && draft.id === h.id ? (
                 <div className="bg-ink-50/80 p-2.5">
                   <NameEditor
@@ -434,13 +516,57 @@ export function ManageOrgPanel({
               ) : (
                 <div className="flex items-center justify-between gap-2 bg-ink-50/80 px-3 py-2.5">
                   <div className="flex min-w-0 items-center gap-2">
-                    <Crown className="size-4 shrink-0 text-brand-600" strokeWidth={2.2} />
-                    <span className="truncate text-[13px] font-extrabold text-ink-900">{h.name}</span>
+                    <Crown
+                      className={cn('size-4 shrink-0', headDisabled ? 'text-ink-400' : 'text-brand-600')}
+                      strokeWidth={2.2}
+                    />
+                    <span
+                      className={cn(
+                        'truncate text-[13px] font-extrabold',
+                        headDisabled ? 'text-ink-400 line-through' : 'text-ink-900',
+                      )}
+                    >
+                      {h.name}
+                    </span>
                     {h.ar && h.ar !== h.name && (
                       <span className="truncate text-[11px] font-bold text-ink-400">{h.ar}</span>
                     )}
+                    {headDisabled && (
+                      <span className="shrink-0 rounded bg-ink-200 px-1.5 py-0.5 text-[9.5px] font-extrabold text-ink-600">
+                        معطّل
+                      </span>
+                    )}
                   </div>
-                  <div className="flex shrink-0 items-center gap-0.5">
+                  <div className="flex shrink-0 items-center gap-1">
+                    {headDisabled ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onToggleHeadDisabled(h.id, false);
+                          toast('success', `تم تفعيل ${h.name} وتيماته واستعاد كامل الصلاحيات`);
+                        }}
+                        aria-label={`تفعيل ${h.name}`}
+                        title="تفعيل الـ Head وتيماته"
+                        className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-1 text-[10.5px] font-extrabold text-white transition hover:bg-emerald-700"
+                      >
+                        <UserCheck className="size-3" />
+                        تفعيل
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onToggleHeadDisabled(h.id, true);
+                          toast('info', `تم تعطيل ${h.name} وتيماته بالكامل`);
+                        }}
+                        aria-label={`تعطيل ${h.name}`}
+                        title="تعطيل الـ Head وتيماته مؤقتاً"
+                        className="inline-flex items-center gap-1 rounded-lg border border-ink-200 bg-white px-2 py-1 text-[10.5px] font-extrabold text-ink-500 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
+                      >
+                        <Ban className="size-3" />
+                        تعطيل
+                      </button>
+                    )}
                     <button
                       onClick={() => startEdit('head', h.id, h.name, h.ar)}
                       aria-label={`تعديل اسم ${h.name}`}
@@ -470,14 +596,27 @@ export function ManageOrgPanel({
 
               <div className="space-y-2 p-2.5">
                 {hMgrs.map((m) => {
+                  const teamDisabled = isTeamDisabled(m, sales, heads);
                   // The manager has his own attendance row (`isManager`) — it is
-                  // edited exactly like a sales row, phone number included.
+                  // edited and toggled just like any sales row, phone number included.
                   const mManager = sales.filter((s) => s.isManager && s.managerId === m.id);
                   const mSales = sales.filter((s) => s.managerId === m.id && !s.isManager);
-                  const mTeam = [...mManager, ...mSales];
+                  const mTeamAll = [...mManager, ...mSales];
+                  const mTeam = filterMode === 'all' ? mTeamAll : mTeamAll.filter(matchesFilter);
+                  if (filterMode === 'disabled' && !teamDisabled && mTeam.length === 0) return null;
+                  if (filterMode === 'active' && teamDisabled && mTeam.length === 0) return null;
+
                   const editingManager = draft && draft.kind === 'manager' && draft.id === m.id;
                   return (
-                    <div key={m.id} className="rounded-lg bg-ink-50/60 p-2.5">
+                    <div
+                      key={m.id}
+                      className={cn(
+                        'rounded-lg p-2.5 transition',
+                        teamDisabled
+                          ? 'border border-dashed border-ink-300 bg-ink-100/60'
+                          : 'bg-ink-50/60',
+                      )}
+                    >
                       <div className="flex items-center justify-between gap-2">
                         {editingManager && draft ? (
                           <NameEditor
@@ -495,9 +634,16 @@ export function ManageOrgPanel({
                           />
                         ) : (
                           <>
-                            <span className="flex min-w-0 items-center gap-1.5 text-[12px] font-extrabold text-ink-700">
+                            <span
+                              className={cn(
+                                'flex min-w-0 items-center gap-1.5 text-[12px] font-extrabold',
+                                teamDisabled ? 'text-ink-400' : 'text-ink-700',
+                              )}
+                            >
                               <Users className="size-3.5 shrink-0 text-ink-400" />
-                              <span className="truncate">تيم {m.name}</span>
+                              <span className={cn('truncate', teamDisabled && 'line-through')}>
+                                تيم {m.name}
+                              </span>
                               {m.ar && m.ar !== m.name && (
                                 <span className="truncate text-[11px] font-bold text-ink-400">{m.ar}</span>
                               )}
@@ -506,8 +652,42 @@ export function ManageOrgPanel({
                                   {m.phone}
                                 </span>
                               )}
+                              {teamDisabled && (
+                                <span className="shrink-0 rounded bg-ink-200 px-1.5 py-0.5 text-[9.5px] font-extrabold text-ink-600">
+                                  معطّل
+                                </span>
+                              )}
                             </span>
-                            <div className="flex shrink-0 items-center gap-0.5">
+                            <div className="flex shrink-0 items-center gap-1">
+                              {teamDisabled ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onToggleManagerDisabled(m.id, false);
+                                    toast('success', `تم تفعيل تيم ${m.name} واستعاد كامل الصلاحيات`);
+                                  }}
+                                  aria-label={`تفعيل تيم ${m.name}`}
+                                  title="تفعيل التيم بالكامل"
+                                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white transition hover:bg-emerald-700"
+                                >
+                                  <UserCheck className="size-2.5" />
+                                  تفعيل التيم
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onToggleManagerDisabled(m.id, true);
+                                    toast('info', `تم تعطيل تيم ${m.name} بالكامل`);
+                                  }}
+                                  aria-label={`تعطيل تيم ${m.name}`}
+                                  title="تعطيل التيم بالكامل مؤقتاً"
+                                  className="inline-flex items-center gap-1 rounded-md border border-ink-200 bg-white px-1.5 py-0.5 text-[10px] font-extrabold text-ink-500 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
+                                >
+                                  <Ban className="size-2.5" />
+                                  تعطيل التيم
+                                </button>
+                              )}
                               <button
                                 onClick={() => startEdit('manager', m.id, m.name, m.ar, m.phone ?? '')}
                                 aria-label={`تعديل اسم تيم ${m.name}`}
@@ -539,6 +719,8 @@ export function ManageOrgPanel({
                       <div className="mt-2 flex flex-wrap items-center gap-1.5">
                         {mTeam.map((s) => {
                           const editingSales = draft && draft.kind === 'sales' && draft.id === s.id;
+                          const personDisabled = isPersonDisabled(s, managers, heads);
+                          const hiddenByDefault = isHiddenByDefault(s);
                           if (editingSales && draft) {
                             return (
                               <div key={s.id} className="basis-full">
@@ -561,14 +743,102 @@ export function ManageOrgPanel({
                           return (
                             <span
                               key={s.id}
-                              className="inline-flex items-center gap-0.5 rounded-lg border border-ink-200 bg-white py-0.5 pe-0.5 ps-2 text-[11px] font-bold text-ink-700"
+                              className={cn(
+                                'inline-flex items-center gap-1 rounded-lg border py-0.5 pe-1 ps-2 text-[11px] font-bold transition',
+                                personDisabled
+                                  ? 'border-dashed border-ink-300 bg-ink-100/80 text-ink-400'
+                                  : hiddenByDefault
+                                    ? 'border-amber-200 bg-amber-50/60 text-ink-700'
+                                    : 'border-ink-200 bg-white text-ink-700',
+                              )}
                             >
-                              <span className="max-w-[10rem] truncate">{s.name}</span>
+                              <span
+                                className={cn(
+                                  'max-w-[10rem] truncate',
+                                  personDisabled && 'line-through decoration-ink-400',
+                                )}
+                              >
+                                {s.name}
+                              </span>
                               {s.isManager && (
-                                <span className="shrink-0 rounded bg-brand-50 px-1 text-[9px] font-extrabold text-brand-600">
+                                <span
+                                  className={cn(
+                                    'shrink-0 rounded px-1 text-[9px] font-extrabold',
+                                    personDisabled
+                                      ? 'bg-ink-200 text-ink-500'
+                                      : 'bg-brand-50 text-brand-600',
+                                  )}
+                                >
                                   مدير
                                 </span>
                               )}
+                              {personDisabled && (
+                                <span className="shrink-0 rounded bg-ink-200 px-1 text-[9px] font-extrabold text-ink-600">
+                                  معطّل
+                                </span>
+                              )}
+                              {hiddenByDefault && (
+                                <span className="shrink-0 rounded bg-amber-100 px-1 text-[9px] font-extrabold text-amber-800">
+                                  مخفي من الحضور
+                                </span>
+                              )}
+
+                              {personDisabled ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onToggleSalesDisabled(s.id, false);
+                                    toast(
+                                      'success',
+                                      `تم تفعيل ${s.name} — ظهر اسمه في الحضور ويمتلك كل الصلاحيات`,
+                                    );
+                                  }}
+                                  aria-label={`تفعيل ${s.name}`}
+                                  title="تفعيل الشخص — سيظهر اسمه في الحضور ويمتلك كل الصلاحيات"
+                                  className="inline-flex items-center gap-0.5 rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white transition hover:bg-emerald-700"
+                                >
+                                  <RotateCcw className="size-2.5" />
+                                  تفعيل
+                                </button>
+                              ) : (
+                                <>
+                                  {hiddenByDefault && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        onToggleSalesDisabled(s.id, false);
+                                        toast(
+                                          'success',
+                                          `تم تفعيل ${s.name} — ظهر اسمه في الحضور ويمتلك كل الصلاحيات`,
+                                        );
+                                      }}
+                                      aria-label={`تفعيل ${s.name}`}
+                                      title="إظهار الاسم في الحضور وتفعيل كل الصلاحيات"
+                                      className="inline-flex items-center gap-0.5 rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white transition hover:bg-emerald-700"
+                                    >
+                                      <UserCheck className="size-2.5" />
+                                      تفعيل
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onToggleSalesDisabled(s.id, true);
+                                      toast(
+                                        'info',
+                                        `تم تعطيل ${s.name} — أُخفي من الحضور والأدوار والتطبيق بالكامل`,
+                                      );
+                                    }}
+                                    aria-label={`تعطيل ${s.name}`}
+                                    title="تعطيل الشخص مؤقتاً — سيختفي من التطبيق بالكامل مع حفظ بياناته"
+                                    className="inline-flex items-center gap-0.5 rounded-md bg-ink-100 px-1.5 py-0.5 text-[10px] font-extrabold text-ink-500 transition hover:bg-amber-100 hover:text-amber-800"
+                                  >
+                                    <Ban className="size-2.5" />
+                                    تعطيل
+                                  </button>
+                                </>
+                              )}
+
                               <button
                                 onClick={() =>
                                   startEdit('sales', s.id, s.name, '', s.phone ?? m.phone ?? '', s.shiftTime || '10:00')
@@ -597,7 +867,7 @@ export function ManageOrgPanel({
                             </span>
                           );
                         })}
-                        {mSales.length === 0 && (
+                        {mSales.length === 0 && filterMode === 'all' && (
                           <span className="text-[11px] font-medium text-ink-300">لا يوجد سيلز بعد</span>
                         )}
                       </div>

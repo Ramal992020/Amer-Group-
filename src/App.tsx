@@ -56,12 +56,18 @@ import {
   formatTime,
   changeSalesAttendance,
   setSalesAttendanceTime,
+  activeOrg,
+  clearSalesAttendance,
+  isPersonDisabled,
 } from './lib/walkin';
 import {
   applyOrgChart,
   renameHead,
   renameManager,
   renameSalesPerson,
+  setHeadDisabled,
+  setManagerDisabled,
+  setSalesPersonDisabled,
 } from './lib/org';
 import type { OrgState } from './lib/org';
 import type {
@@ -563,11 +569,16 @@ function WalkInApp({
       setRemovedIds(next.removedIds ?? []);
       // نفس طريقة الترتيب على الفرعين — الدورة تسافر مع الهيكل المشترك.
       setCycleSettings(normalizeTeamCycle(chart.cycle));
-      // New people start as «لم يحضر»; existing attendance is never touched.
+      // New people start as «لم يحضر»; existing attendance is preserved unless
+      // the person was disabled from «الهيكل» (which clears any active check-in).
       setSalesState((prev) => {
         const merged = defaultSalesState(next.sales);
         next.sales.forEach((person) => {
-          if (prev[person.id]) merged[person.id] = { ...merged[person.id], ...prev[person.id] };
+          if (prev[person.id]) {
+            merged[person.id] = isPersonDisabled(person, next.managers, next.heads)
+              ? { ...prev[person.id], status: 'absent', checkInOrder: null, checkInTime: null }
+              : { ...merged[person.id], ...prev[person.id] };
+          }
         });
         return merged;
       });
@@ -965,6 +976,12 @@ function WalkInApp({
     toast('success', 'تمت استعادة النسخة الاحتياطية ومزامنتها');
   };
 
+  // ── Active roster (excludes anyone disabled from «الهيكل») ──
+  const activeRoster = useMemo(() => activeOrg(heads, managers, sales), [heads, managers, sales]);
+  const activeHeads = activeRoster.heads;
+  const activeManagers = activeRoster.managers;
+  const activeSales = activeRoster.sales;
+
   // ── Rotation ──
   const rotationOptions = useMemo(
     () => ({ workspace: account, carryOver, cycle: cycleSettings }),
@@ -975,11 +992,11 @@ function WalkInApp({
       // After yesterday's pinned person (skipped), the queue continues on the
       // OPPOSITE side: Kaled's team ⇄ Wael / Mohamed Samir's teams.
       return carryOver.headId === 'khaled'
-        ? (heads.find((h) => h.id !== 'khaled')?.id ?? 'wael')
+        ? (activeHeads.find((h) => h.id !== 'khaled')?.id ?? 'wael')
         : 'khaled';
     }
     return startingHead;
-  }, [isFixedTeamWorkspace, history.length, carryOver, heads, startingHead]);
+  }, [isFixedTeamWorkspace, history.length, carryOver, activeHeads, startingHead]);
 
   // ── الدور على التيم (اختيار السيلز يدوي) ──
   // المحرّك يحدد التيم اللي عليه الدور فقط، ومين يقعد مع العميل يتم اختياره
@@ -988,11 +1005,21 @@ function WalkInApp({
   // `turnPlan.serving` is who actually takes the client; the teams in between
   // (nobody free) are `shiftedTeams`.
   const turnPlan: TurnPlan | null = useMemo(
-    () => (paused ? null : computeTurnPlan(salesState, history, managers, sales, heads, rotationOptions)),
-    [paused, salesState, history, managers, sales, heads, rotationOptions],
+    () =>
+      paused
+        ? null
+        : computeTurnPlan(
+            salesState,
+            history,
+            activeManagers,
+            activeSales,
+            activeHeads,
+            rotationOptions,
+          ),
+    [paused, salesState, history, activeManagers, activeSales, activeHeads, rotationOptions],
   );
   const onTurnTeam: ManagerTeam | null = turnPlan?.onTurn ?? null;
-  const onTurnHeadName = onTurnTeam ? heads.find((h) => h.id === onTurnTeam.headId)?.name ?? '' : '';
+  const onTurnHeadName = onTurnTeam ? activeHeads.find((h) => h.id === onTurnTeam.headId)?.name ?? '' : '';
   const shiftedTeams = useMemo(() => turnPlan?.shiftedTeams ?? [], [turnPlan]);
   const nextTeam: TeamTurn | null = turnPlan?.serving ?? null;
   /** The team on turn has nobody free — the serving team is a later one (or none). */
@@ -1006,11 +1033,11 @@ function WalkInApp({
   const teamRoster: TeamMemberOption[] = useMemo(() => {
     if (!nextTeam) return [];
     const priority = new Map(
-      availableTeamMembers(nextTeam.managerId, salesState, sales).map((s, i) => [s.id, i]),
+      availableTeamMembers(nextTeam.managerId, salesState, activeSales).map((s, i) => [s.id, i]),
     );
     const weight = (status: TeamMemberOption['status']) =>
       status === 'available' ? 0 : status === 'busy' ? 1 : 2;
-    return sales
+    return activeSales
       .filter((s) => s.managerId === nextTeam.managerId)
       .map((s) => {
         const st = salesState[s.id];
@@ -1031,15 +1058,15 @@ function WalkInApp({
           weight(a.status) - weight(b.status) ||
           (priority.get(a.id) ?? 0) - (priority.get(b.id) ?? 0),
       );
-  }, [nextTeam, sales, salesState]);
+  }, [nextTeam, activeSales, salesState]);
 
   /**
    * ترتيب الفرق (بالمديرين) بدءاً من التيم اللي عليه الدور — حسب طريقة الترتيب
    * المختارة في «طريقة ترتيب الأدوار» (الدورة التلقائية أو الدورة المخصّصة).
    */
   const naturalTeamOrder = useMemo(
-    () => teamOrderFrom(managers, nextTeam?.managerId, cycleSettings, sales),
-    [managers, nextTeam, cycleSettings, sales],
+    () => teamOrderFrom(activeManagers, nextTeam?.managerId, cycleSettings, activeSales),
+    [activeManagers, nextTeam, cycleSettings, activeSales],
   );
 
   /**
@@ -1048,8 +1075,8 @@ function WalkInApp({
    * المرجع الوحيد لما اختاره المدير.
    */
   const teamRound = useMemo(
-    () => teamRoundFrom(managers, nextTeam?.managerId, cycleSettings, sales, manualOrder),
-    [managers, nextTeam, cycleSettings, sales, manualOrder],
+    () => teamRoundFrom(activeManagers, nextTeam?.managerId, cycleSettings, activeSales, manualOrder),
+    [activeManagers, nextTeam, cycleSettings, activeSales, manualOrder],
   );
 
   /** هل يوجد ترتيب يدوي فعّال فعلاً (يتجاهل أي أثر قديم بالاسم القديم للسيلز)? */
@@ -1093,27 +1120,27 @@ function WalkInApp({
 
   /** الفرق الجاية اللي عليها الدور فعلاً (اللي لها سيلز متاح). */
   const upcomingTeams: UpcomingTeam[] = useMemo(() => {
-    const nameOfHead = (headId: string) => heads.find((h) => h.id === headId)?.name ?? headId;
+    const nameOfHead = (headId: string) => activeHeads.find((h) => h.id === headId)?.name ?? headId;
     return naturalTeamOrder
       .slice(1)
       .map((team) => ({
         managerId: team.id,
         managerName: team.name,
         headName: nameOfHead(team.headId),
-        available: availableTeamMembers(team.id, salesState, sales).length,
+        available: availableTeamMembers(team.id, salesState, activeSales).length,
       }))
       .filter((team) => team.available > 0)
       .slice(0, 4);
-  }, [naturalTeamOrder, salesState, sales, heads]);
+  }, [naturalTeamOrder, salesState, activeSales, activeHeads]);
 
   const availableForTurn = teamRoster.filter((m) => m.status === 'available').length;
 
 
   const totalToday = history.length;
-  const presentCount = sales.filter((s) => salesState[s.id]?.status !== 'absent').length;
-  const busyList = sales.filter((s) => salesState[s.id]?.status === 'busy');
-  const availableCount = sales.filter((s) => salesState[s.id]?.status === 'available').length;
-  const absentCount = sales.length - presentCount;
+  const presentCount = activeSales.filter((s) => salesState[s.id]?.status !== 'absent').length;
+  const busyList = activeSales.filter((s) => salesState[s.id]?.status === 'busy');
+  const availableCount = activeSales.filter((s) => salesState[s.id]?.status === 'available').length;
+  const absentCount = activeSales.length - presentCount;
 
   const today = new Date().toLocaleDateString('ar-EG', {
     weekday: 'long',
@@ -1253,6 +1280,82 @@ function WalkInApp({
     });
     keepRemoved([salesId]);
     markOrgEdited();
+  };
+
+  /**
+   * Clear attendance for newly disabled member IDs across BOTH branches so no
+   * stale check-in lingers in either the open workspace or the sibling branch.
+   */
+  const clearDisabledAttendance = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setSalesState((prev) => clearSalesAttendance(prev, ids).salesState);
+
+    const other = otherWorkspace(account);
+    if (other) {
+      const otherLocal = loadPersisted(other);
+      if (otherLocal?.salesState) {
+        const cleaned = clearSalesAttendance(otherLocal.salesState, ids);
+        if (cleaned.changed) {
+          savePersisted({ ...otherLocal, salesState: cleaned.salesState }, other);
+        }
+      }
+
+      const otherBranch = asBranch(other);
+      if (syncReadyRef.current && otherBranch) {
+        void (async () => {
+          try {
+            const config = getSyncConfig(account);
+            const remote = await pullRemote(otherBranch, loadPersisted(otherBranch), config);
+            if (!remote) return;
+            const base = hydrate({ ...(remote.payload as Partial<PersistedWalkin>), updatedAt: remote.updatedAt });
+            const cleaned = clearSalesAttendance(base.salesState, ids);
+            if (!cleaned.changed) return;
+            const stamp = Math.max(syncNow(), remote.updatedAt + 1, (base.updatedAt ?? 0) + 1);
+            const nextState: PersistedWalkin = {
+              ...base,
+              salesState: cleaned.salesState,
+              updatedAt: stamp,
+            };
+            const pushed = await pushRemote(otherBranch, nextState, stamp, config);
+            if (pushed === 'written') savePersisted(nextState, otherBranch);
+          } catch {
+            // Shared ORG sync will still clear attendance when the sibling branch hydrates.
+          }
+        })();
+      }
+    }
+  };
+
+  const toggleHeadDisabled = (headId: string, disabled: boolean) => {
+    const next = setHeadDisabled(orgState(), headId, disabled);
+    commitOrg(next);
+    if (disabled) {
+      const affectedIds = next.sales
+        .filter((s) => s.headId === headId || next.managers.some((m) => m.id === s.managerId && m.headId === headId))
+        .map((s) => s.id);
+      clearDisabledAttendance(affectedIds);
+      if (startingHead === headId) {
+        const remaining = next.heads.filter((h) => !h.disabled);
+        if (remaining[0]) setStartingHead(remaining[0].id);
+      }
+    }
+  };
+
+  const toggleManagerDisabled = (managerId: string, disabled: boolean) => {
+    const next = setManagerDisabled(orgState(), managerId, disabled);
+    commitOrg(next);
+    if (disabled) {
+      const affectedIds = next.sales.filter((s) => s.managerId === managerId).map((s) => s.id);
+      clearDisabledAttendance(affectedIds);
+    }
+  };
+
+  const toggleSalesDisabled = (salesId: string, disabled: boolean) => {
+    const next = setSalesPersonDisabled(orgState(), salesId, disabled);
+    commitOrg(next);
+    if (disabled) {
+      clearDisabledAttendance([salesId]);
+    }
   };
 
   // ── Attendance ──
@@ -1571,10 +1674,10 @@ function WalkInApp({
    * the person serving, and the team's turn is what the queue advances on.
    */
   const confirmWith = (salesId: string) => {
-    const s = sales.find((x) => x.id === salesId);
+    const s = activeSales.find((x) => x.id === salesId);
     if (!s) return;
-    const mgr = managers.find((m) => m.id === s.managerId) || { id: s.managerId, name: s.managerId };
-    const head = heads.find((h) => h.id === s.headId) || { id: s.headId, name: s.headId };
+    const mgr = activeManagers.find((m) => m.id === s.managerId) || { id: s.managerId, name: s.managerId };
+    const head = activeHeads.find((h) => h.id === s.headId) || { id: s.headId, name: s.headId };
     const n = seq + 1;
     const assignment: Assignment = {
       id: `${Date.now()}-${n}`,
@@ -1624,7 +1727,7 @@ function WalkInApp({
     // دور أمس المرحَّل يُستهلك بمجرد خدمة التيم الخاص به.
     const carryAfter = carryOver && carryOver.managerId === mgr.id ? null : carryOver;
     // «Next» is the team that follows the served one in the cycle, attendance aside.
-    const nextAfter = successorTeam(managers, mgr.id, cycleSettings, sales);
+    const nextAfter = successorTeam(activeManagers, mgr.id, cycleSettings, activeSales);
     setSeq(n);
     setHistory(newHistory);
     setSalesState(newSalesState);
@@ -1684,7 +1787,7 @@ function WalkInApp({
     const servedToday = carryOver?.managerId
       ? history.some((a) => a.managerId === carryOver.managerId)
       : false;
-    setCarryOver(carryOverForNewDay(servedToday ? null : carryOver, pending, history, heads, account, undefined, managers, cycleSettings, sales));
+    setCarryOver(carryOverForNewDay(servedToday ? null : carryOver, pending, history, activeHeads, account, undefined, activeManagers, cycleSettings, activeSales));
     // Keep saved custom-team members in both RESTA and SITE's fresh attendance map.
     setSalesState(createNewDaySalesState(account, sales));
     setHistory([]);
@@ -1996,7 +2099,7 @@ function WalkInApp({
                     )}
                   </section>
 
-                  <ClientExcelBuilder account={account} sales={sales} />
+                  <ClientExcelBuilder account={account} sales={activeSales} />
                 </div>
 
                 {/* stats moved to bottom */}
@@ -2021,7 +2124,7 @@ function WalkInApp({
                       hint="جاهز لاستقبال عميل"
                       accent="green"
                       icon={<UserCheck className="size-5" strokeWidth={2.2} />}
-                      progress={sales.length ? (availableCount / sales.length) * 100 : 0}
+                      progress={activeSales.length ? (availableCount / activeSales.length) * 100 : 0}
                     />
                     <StatCard
                       label="مشغول"
@@ -2029,15 +2132,15 @@ function WalkInApp({
                       hint="في مقابلة حالياً"
                       accent="amber"
                       icon={<PhoneCall className="size-5" strokeWidth={2.2} />}
-                      progress={sales.length ? (busyList.length / sales.length) * 100 : 0}
+                      progress={activeSales.length ? (busyList.length / activeSales.length) * 100 : 0}
                     />
                     <StatCard
                       label="لم يحضر"
                       value={absentCount}
-                      hint={`من أصل ${sales.length} فرد`}
+                      hint={`من أصل ${activeSales.length} فرد`}
                       accent="gray"
                       icon={<Users className="size-5" strokeWidth={2.2} />}
-                      progress={sales.length ? (absentCount / sales.length) * 100 : 0}
+                      progress={activeSales.length ? (absentCount / activeSales.length) * 100 : 0}
                     />
                   </div>
                 )}
@@ -2143,9 +2246,9 @@ function WalkInApp({
                     onToggle={toggleAttendance}
                     onFree={freeSales}
                     onUpdateTime={updateAttendanceTime}
-                    heads={heads}
-                    managers={managers}
-                    sales={sales}
+                    heads={activeHeads}
+                    managers={activeManagers}
+                    sales={activeSales}
                   />
                 )}
               </div>
@@ -2204,9 +2307,9 @@ function WalkInApp({
                         الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم عند الدور. يمكنك تعديل ترتيب الفرق بالأسهم.
                       </p>
                       {teamRound.map((team, index) => {
-                        const members = sales.filter((s) => s.managerId === team.id);
+                        const members = activeSales.filter((s) => s.managerId === team.id);
                         const membersAvailable = members.filter((s) => salesState[s.id]?.status === 'available').length;
-                        const headName = heads.find((h) => h.id === team.headId)?.name ?? team.headId;
+                        const headName = activeHeads.find((h) => h.id === team.headId)?.name ?? team.headId;
                         return (
                           <div
                             key={team.id}
@@ -2302,9 +2405,9 @@ function WalkInApp({
                 <section className="surface anim-fade-up p-4" style={{ animationDelay: '0.08s' }}>
                   {isFixedTeamWorkspace ? (
                     <CycleSettingsPanel
-                      managers={managers}
-                      heads={heads}
-                      sales={sales}
+                      managers={activeManagers}
+                      heads={activeHeads}
+                      sales={activeSales}
                       settings={cycleSettings}
                       onChange={updateCycleSettings}
                     />
@@ -2316,7 +2419,7 @@ function WalkInApp({
                         icon={<Crown className="size-4.5" strokeWidth={2.1} />}
                       />
                       <div className="grid grid-cols-2 gap-2">
-                        {heads.map((h) => (
+                        {activeHeads.map((h) => (
                           <button
                             key={h.id}
                             onClick={() => setStartingHead(h.id)}
@@ -2344,6 +2447,7 @@ function WalkInApp({
                 <AddMemberPanel
                   heads={heads}
                   managers={managers}
+                  sales={sales}
                   onAddHead={addHead}
                   onAddManager={addManager}
                   onAddSales={addSales}
@@ -2360,6 +2464,9 @@ function WalkInApp({
                   onDeleteHead={deleteHead}
                   onDeleteManager={deleteManager}
                   onDeleteSales={deleteSales}
+                  onToggleHeadDisabled={toggleHeadDisabled}
+                  onToggleManagerDisabled={toggleManagerDisabled}
+                  onToggleSalesDisabled={toggleSalesDisabled}
                 />
 
                 {/* Bottom: backup/restore + device sync. */}

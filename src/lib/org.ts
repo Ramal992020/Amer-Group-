@@ -210,3 +210,127 @@ export function renameSalesPerson(org: OrgState, salesId: string, name: string):
     }),
   };
 }
+
+// ───────────── Disabling / re-enabling members without deleting them ─────────────
+
+/**
+ * Enable (`disabled = false`) or disable (`disabled = true`) any individual person
+ * (sales or manager self-row) from «الهيكل».
+ *
+ * Keeps their ID, name, mobile, shift time, team slot and served history intact.
+ * Explicitly stores `disabled: false` upon reactivation so even a default-hidden
+ * manager appears in Attendance and regains full permissions across the app.
+ */
+export function setSalesPersonDisabled(org: OrgState, salesId: string, disabled: boolean): OrgState {
+  const person = org.sales.find((s) => s.id === salesId);
+  if (!person) return org;
+
+  const team = org.managers.find((m) => m.id === person.managerId);
+  const headId = team?.headId ?? person.headId;
+  const head = org.heads.find((h) => h.id === headId);
+
+  if (disabled) {
+    return {
+      ...org,
+      sales: org.sales.map((s) => (s.id === salesId ? { ...s, disabled: true } : s)),
+    };
+  }
+
+  const headWasDisabled = Boolean(head?.disabled);
+  const teamWasDisabled = headWasDisabled || Boolean(team?.disabled);
+
+  return {
+    ...org,
+    heads: headWasDisabled
+      ? org.heads.map((h) => (h.id === headId ? { ...h, disabled: false } : h))
+      : org.heads,
+    managers: org.managers.map((m) => {
+      if (m.id === person.managerId) {
+        return m.disabled ? { ...m, disabled: false } : m;
+      }
+      if (headWasDisabled && m.headId === headId) {
+        return { ...m, disabled: true };
+      }
+      return m;
+    }),
+    sales: org.sales.map((s) => {
+      if (s.id === salesId) return { ...s, disabled: false };
+      if (teamWasDisabled && s.managerId === person.managerId) {
+        return { ...s, disabled: true };
+      }
+      return s;
+    }),
+  };
+}
+
+/** Enable (`disabled = false`) or disable (`disabled = true`) an entire manager team. */
+export function setManagerDisabled(org: OrgState, managerId: string, disabled: boolean): OrgState {
+  const team = org.managers.find((m) => m.id === managerId);
+  if (!team) return org;
+
+  if (disabled) {
+    return {
+      ...org,
+      managers: org.managers.map((m) => (m.id === managerId ? { ...m, disabled: true } : m)),
+    };
+  }
+
+  const head = org.heads.find((h) => h.id === team.headId);
+  const headWasDisabled = Boolean(head?.disabled);
+  const teamMembers = org.sales.filter((s) => s.managerId === managerId);
+  const reviveAllMembers =
+    teamMembers.length > 0 && teamMembers.every((s) => Boolean(s.disabled));
+
+  return {
+    ...org,
+    heads: headWasDisabled
+      ? org.heads.map((h) => (h.id === team.headId ? { ...h, disabled: false } : h))
+      : org.heads,
+    managers: org.managers.map((m) => {
+      if (m.id === managerId) return { ...m, disabled: false };
+      if (headWasDisabled && m.headId === team.headId) return { ...m, disabled: true };
+      return m;
+    }),
+    sales: org.sales.map((s) => {
+      if (s.managerId !== managerId) return s;
+      if (reviveAllMembers) return { ...s, disabled: false };
+      if (s.isManager && !s.disabled) return { ...s, disabled: false };
+      return s;
+    }),
+  };
+}
+
+/** Enable (`disabled = false`) or disable (`disabled = true`) an entire Head group. */
+export function setHeadDisabled(org: OrgState, headId: string, disabled: boolean): OrgState {
+  const head = org.heads.find((h) => h.id === headId);
+  if (!head) return org;
+
+  if (disabled) {
+    return {
+      ...org,
+      heads: org.heads.map((h) => (h.id === headId ? { ...h, disabled: true } : h)),
+    };
+  }
+
+  const headManagers = org.managers.filter((m) => m.headId === headId);
+  const reviveAllManagers =
+    headManagers.length > 0 && headManagers.every((m) => Boolean(m.disabled));
+  const headManagerIds = new Set(headManagers.map((m) => m.id));
+  const headSales = org.sales.filter((s) => s.headId === headId || headManagerIds.has(s.managerId));
+  const reviveAllSales = headSales.length > 0 && headSales.every((s) => Boolean(s.disabled));
+
+  return {
+    ...org,
+    heads: org.heads.map((h) => (h.id === headId ? { ...h, disabled: false } : h)),
+    managers: reviveAllManagers
+      ? org.managers.map((m) => (m.headId === headId ? { ...m, disabled: false } : m))
+      : org.managers,
+    sales: reviveAllSales
+      ? org.sales.map((s) =>
+          s.headId === headId || headManagerIds.has(s.managerId)
+            ? { ...s, disabled: false }
+            : s,
+        )
+      : org.sales,
+  };
+}
