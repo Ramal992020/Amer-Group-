@@ -58,6 +58,55 @@ const isoToTimeStr = (iso?: string | null): string => {
   }
 };
 
+const parseHM = (timeStr: string): { h: number; m: number } => {
+  const [hs, ms] = timeStr.split(':');
+  const h = Math.min(23, Math.max(0, Number.parseInt(hs || '0', 10) || 0));
+  const m = Math.min(59, Math.max(0, Number.parseInt(ms || '0', 10) || 0));
+  return { h, m };
+};
+
+// ─── Analog clock face ───
+function AnalogClock({ timeStr }: { timeStr: string }) {
+  const { h, m } = parseHM(timeStr);
+  const hourAngle = (h % 12) * 30 + m * 0.5; // 360/12 =30
+  const minuteAngle = m * 6; // 360/60=6
+
+  return (
+    <div className="relative mx-auto size-[180px] shrink-0 rounded-full border-[3px] border-ink-900 bg-white shadow-[0_8px_24px_-8px_rgba(0,0,0,0.25)]">
+      {/* ticks */}
+      {Array.from({ length: 12 }).map((_, i) => {
+        const ang = i * 30;
+        const isHour = i % 3 === 0;
+        return (
+          <span
+            key={i}
+            className="absolute left-1/2 top-1/2 h-[84px] w-px origin-bottom bg-ink-200"
+            style={{ transform: `translate(-50%, -100%) rotate(${ang}deg)` }}
+          >
+            <span className={cn('absolute left-1/2 top-0 block -translate-x-1/2 rounded-full bg-ink-900', isHour ? 'h-2.5 w-1' : 'h-1.5 w-px bg-ink-300')} />
+          </span>
+        );
+      })}
+      {/* hour hand */}
+      <span
+        className="absolute left-1/2 top-1/2 h-[52px] w-[5px] origin-bottom -translate-x-1/2 -translate-y-full rounded-full bg-ink-900 transition-transform duration-300"
+        style={{ transform: `translate(-50%, -100%) rotate(${hourAngle}deg)` }}
+      />
+      {/* minute hand */}
+      <span
+        className="absolute left-1/2 top-1/2 h-[72px] w-[3px] origin-bottom -translate-x-1/2 -translate-y-full rounded-full bg-brand-600 transition-transform duration-300"
+        style={{ transform: `translate(-50%, -100%) rotate(${minuteAngle}deg)` }}
+      />
+      {/* center dot */}
+      <span className="absolute left-1/2 top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-900 ring-2 ring-white" />
+      {/* digital inside */}
+      <span className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-lg bg-ink-900 px-2 py-0.5 text-[11px] font-black text-white tnum">
+        {String(h).padStart(2, '0')}:{String(m).padStart(2, '0')}
+      </span>
+    </div>
+  );
+}
+
 export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdateTime, heads, managers, sales }: Props) {
   const toast = useToast();
   const [copyTarget, setCopyTarget] = useState<SalesPerson | null>(null);
@@ -68,12 +117,17 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
   const [attendanceBranch, setAttendanceBranch] = useState<Branch>(currentBranch);
   const [savingId, setSavingId] = useState<string | null>(null);
 
-  // ─── time control ───
-  const [defaultTimeStr, setDefaultTimeStr] = useState<string>(() => nowTimeStr());
+  // ─── time modals ───
+  const [preparingPerson, setPreparingPerson] = useState<SalesPerson | null>(null);
+  const [prepareTimeStr, setPrepareTimeStr] = useState<string>(() => nowTimeStr());
+
   const [editingPerson, setEditingPerson] = useState<SalesPerson | null>(null);
   const [editTimeStr, setEditTimeStr] = useState<string>(nowTimeStr());
 
-  const defaultTimeISO = useMemo(() => timeStrToISO(defaultTimeStr), [defaultTimeStr]);
+  const openPrepare = (person: SalesPerson) => {
+    setPrepareTimeStr(nowTimeStr()); // الافتراضي وقت التحضير الآن
+    setPreparingPerson(person);
+  };
 
   const openEditTime = (person: SalesPerson) => {
     const st = salesState[person.id];
@@ -81,15 +135,6 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
     setEditTimeStr(isoToTimeStr(st?.checkInTime));
   };
 
-  const refreshDefaultToNow = () => setDefaultTimeStr(nowTimeStr());
-
-  /**
-   * «تحميل Excel الحضور» — ONE combined file for BOTH branches, downloadable
-   * from any of them. Normal registration now keeps an attendee in the selected
-   * branch only; the merge still de-duplicates any legacy/older duplicate row
-   * by keeping the first check-in of the day. The other branch's cloud row is
-   * the source of truth and the local mirror is only the offline fallback.
-   */
   const exportCombined = async (): Promise<void> => {
     if (exporting) return;
     setExporting(true);
@@ -107,7 +152,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
             otherState = hydrate(remote.payload as never).salesState;
           }
         } catch {
-          /* offline — the local mirror is the best we have */
+          /* offline */
         }
         theirs = attendanceRowsFor(roster, otherState);
       }
@@ -126,7 +171,6 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
     const st = salesState[person.id];
     const time = st?.checkInTime ? formatTime(st.checkInTime) : formatTime(new Date().toISOString());
     const text = `NAME : ${person.name}\nBRANCH : ${branch}\nTIME : ${time}`;
-
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -136,14 +180,9 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
       ta.style.opacity = '0';
       document.body.appendChild(ta);
       ta.select();
-      try {
-        document.execCommand('copy');
-      } catch {
-        /* ignore */
-      }
+      try { document.execCommand('copy'); } catch { /* ignore */ }
       document.body.removeChild(ta);
     }
-
     setCopyTarget(null);
     setCopiedId(person.id);
     toast('success', `تم نسخ بيان ${person.name}`);
@@ -153,17 +192,27 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
   const runAttendanceAction = async (
     person: SalesPerson,
     action: (id: string, branch: Branch, at?: string) => void | Promise<void>,
-    withTime = true,
+    withTime = false,
+    timeISO?: string,
   ): Promise<void> => {
     if (savingId) return;
     setSavingId(person.id);
     try {
-      if (withTime) {
-        // عند التحضير: الوقت الافتراضي هو وقت التحضير، ويمكن التحكم فيه
-        await action(person.id, attendanceBranch, defaultTimeISO);
-      } else {
-        await action(person.id, attendanceBranch);
-      }
+      if (withTime && timeISO) await action(person.id, attendanceBranch, timeISO);
+      else await action(person.id, attendanceBranch);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const confirmPrepare = async (): Promise<void> => {
+    if (!preparingPerson || savingId) return;
+    const iso = timeStrToISO(prepareTimeStr);
+    setSavingId(preparingPerson.id);
+    try {
+      await onToggle(preparingPerson.id, attendanceBranch, iso);
+      toast('success', `تم تحضير ${preparingPerson.name} بوقت ${formatTime(iso)} في فرع ${attendanceBranch}`);
+      setPreparingPerson(null);
     } finally {
       setSavingId(null);
     }
@@ -174,9 +223,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
     const iso = timeStrToISO(editTimeStr);
     setSavingId(editingPerson.id);
     try {
-      if (onUpdateTime) {
-        await onUpdateTime(editingPerson.id, currentBranch, iso);
-      }
+      if (onUpdateTime) await onUpdateTime(editingPerson.id, currentBranch, iso);
       toast('success', `تم تحديث وقت حضور ${editingPerson.name} إلى ${formatTime(iso)}`);
       setEditingPerson(null);
     } finally {
@@ -188,69 +235,34 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
   return (
     <div className="space-y-4">
-      <div className="surface flex flex-col gap-4 p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
-            <p className="mt-1 text-xs font-medium text-ink-400">
-              اختر مكان وجود الشخص ثم اضغط اسمه؛ سيُثبت حضوره في حساب الفرع المختار فقط.
-            </p>
-            <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
-              <MapPin className="size-3.5" />
-              الاختيار الحالي: {attendanceBranch}
-              {attendanceBranch !== currentBranch && ' · سيظهر تأكيد أنه سُجّل في الفرع الآخر'}
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-2 shrink-0">
-            {(['SITE', 'RESTA'] as const).map((branch) => (
-              <button
-                key={branch}
-                type="button"
-                disabled={savingId !== null}
-                onClick={() => setAttendanceBranch(branch)}
-                aria-pressed={attendanceBranch === branch}
-                className={cn(
-                  'rounded-xl border px-5 py-2.5 text-sm font-black transition disabled:cursor-wait disabled:opacity-60',
-                  attendanceBranch === branch
-                    ? 'border-brand-600 bg-brand-600 text-white'
-                    : 'border-ink-200 bg-white text-ink-600 hover:border-brand-300',
-                )}
-              >
-                {branch}
-              </button>
-            ))}
-          </div>
+      <div className="surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-extrabold text-ink-900">تسجيل الحضور في فرع</p>
+          <p className="mt-1 text-xs font-medium text-ink-400">
+            اضغط على أي شخص ليظهر لك شكل الساعة وتختار وقت حضوره — الافتراضي هو وقت التحضير الآن.
+          </p>
+          <p className="mt-1.5 flex items-center gap-1 text-[11px] font-extrabold text-brand-600">
+            <MapPin className="size-3.5" />
+            الفرع المختار: {attendanceBranch}
+            {attendanceBranch !== currentBranch && ' · سيُسجل في الفرع الآخر'}
+          </p>
         </div>
-
-        {/* time control */}
-        <div className="flex flex-col gap-2 rounded-xl border border-ink-100 bg-ink-50/70 p-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2">
-            <span className="grid size-8 place-items-center rounded-lg bg-white text-ink-500 shadow-sm ring-1 ring-ink-100">
-              <Clock3 className="size-4" />
-            </span>
-            <div>
-              <p className="text-[12px] font-extrabold text-ink-900">وقت الحضور عند التحضير</p>
-              <p className="text-[11px] font-medium text-ink-400">الافتراضي هو وقت التحضير الآن، ويمكنك تغييره قبل تسجيل أي شخص</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="time"
-              value={defaultTimeStr}
-              onChange={(e) => setDefaultTimeStr(e.target.value || nowTimeStr())}
-              className="field w-[130px] py-2 text-center text-[14px] font-bold"
-              aria-label="وقت الحضور"
-            />
+        <div className="grid grid-cols-2 gap-2">
+          {(['SITE', 'RESTA'] as const).map((branch) => (
             <button
+              key={branch}
               type="button"
-              onClick={refreshDefaultToNow}
-              className="btn btn-neutral px-3 py-2 text-[12px]"
-              title="العودة للوقت الحالي"
+              disabled={savingId !== null}
+              onClick={() => setAttendanceBranch(branch)}
+              aria-pressed={attendanceBranch === branch}
+              className={cn(
+                'rounded-xl border px-5 py-2.5 text-sm font-black transition disabled:cursor-wait disabled:opacity-60',
+                attendanceBranch === branch ? 'border-brand-600 bg-brand-600 text-white' : 'border-ink-200 bg-white text-ink-600 hover:border-brand-300',
+              )}
             >
-              <Clock className="size-3.5" />
-              الآن
+              {branch}
             </button>
-          </div>
+          ))}
         </div>
       </div>
 
@@ -258,20 +270,9 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
       <div className="flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="ابحث باسم السيلز…"
-            aria-label="ابحث باسم السيلز"
-            className="field pr-10"
-          />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ابحث باسم السيلز…" aria-label="ابحث باسم السيلز" className="field pr-10" />
         </div>
-        <button
-          type="button"
-          onClick={() => void exportCombined()}
-          disabled={exporting}
-          className="btn btn-primary shrink-0"
-        >
+        <button type="button" onClick={() => void exportCombined()} disabled={exporting} className="btn btn-primary shrink-0">
           <Download className="size-4" />
           {exporting ? 'جارٍ تجهيز الملف…' : 'تحميل Excel الحضور'}
         </button>
@@ -288,38 +289,26 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
         const headSales = sales.filter((s) => s.headId === head.id);
         const visible = headSales.filter(matches);
         if (visible.length === 0) return null;
-
         const present = headSales.filter((s) => salesState[s.id]?.status !== 'absent').length;
-
         return (
-          <section
-            key={head.id}
-            className="surface anim-fade-up overflow-hidden"
-            style={{ animationDelay: `${hi * 0.06}s` }}
-          >
-            {/* head bar */}
+          <section key={head.id} className="surface anim-fade-up overflow-hidden" style={{ animationDelay: `${hi * 0.06}s` }}>
             <div className="flex items-center justify-between gap-3 border-b border-ink-100 bg-ink-50/60 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2.5">
                 <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-600 text-white shadow-[0_4px_10px_-3px_rgba(227,6,19,0.5)]">
                   <Crown className="size-4.5" strokeWidth={2.2} />
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate font-display text-[16px] font-extrabold leading-tight text-ink-900">
-                    {head.name}
-                  </p>
+                  <p className="truncate font-display text-[16px] font-extrabold leading-tight text-ink-900">{head.name}</p>
                   <p className="text-[11px] font-semibold text-ink-400">Head Manager</p>
                 </div>
               </div>
-              <span className="badge badge-gray tnum shrink-0">
-                {present}/{headSales.length} حاضر
-              </span>
+              <span className="badge badge-gray tnum shrink-0">{present}/{headSales.length} حاضر</span>
             </div>
 
             <div className="space-y-4 p-3.5">
               {headManagers.map((mgr) => {
                 const members = sales.filter((s) => s.managerId === mgr.id).filter(matches);
                 if (members.length === 0) return null;
-
                 return (
                   <div key={mgr.id}>
                     <div className="mb-2 flex items-center gap-1.5 px-1">
@@ -327,11 +316,10 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                       <span className="text-[12px] font-extrabold text-ink-500">تيم {mgr.name}</span>
                       <span className="h-px flex-1 bg-ink-100" />
                     </div>
-
                     <div className="space-y-2">
                       {members.map((person) => {
                         const st = salesState[person.id];
-                        const present = st?.status !== 'absent';
+                        const isPresent = st?.status !== 'absent';
                         const busy = st?.status === 'busy';
                         const justCopied = copiedId === person.id;
                         const saving = savingId === person.id;
@@ -340,24 +328,30 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                         const subtitle = selectedOtherBranch
                           ? busy
                             ? `مشغول الآن في ${currentBranch} — لا يمكن نقله قبل إنهاء المقابلة`
-                            : present
-                              ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} بوقت ${formatTime(defaultTimeISO)}`
-                              : `اضغط لتسجيله في فرع ${attendanceBranch} بوقت ${formatTime(defaultTimeISO)}`
+                            : isPresent
+                              ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} مع اختيار الوقت`
+                              : `اضغط لتسجيله في فرع ${attendanceBranch} مع اختيار الوقت`
                           : busy
                             ? 'مشغول الآن مع عميل'
-                            : present
+                            : isPresent
                               ? person.isManager
                                 ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
                                 : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
-                              : `لم يحضر — سيُسجل بوقت ${formatTime(defaultTimeISO)}`;
+                              : 'لم يحضر — اضغط لاختيار وقت الحضور';
 
-                        const registerOrMove = () => {
+                        const handleClick = () => {
+                          if (saving) return;
                           if (selectedOtherBranch) {
-                            void runAttendanceAction(person, onToggle, true);
+                            // نقل لفرع آخر → يفتح الساعة أيضا
+                            openPrepare(person);
                           } else if (busy) {
                             void runAttendanceAction(person, onFree, false);
+                          } else if (isPresent) {
+                            // حاضر → انصراف مباشر، التعديل من زر الساعة
+                            void runAttendanceAction(person, onToggle, false);
                           } else {
-                            void runAttendanceAction(person, onToggle, true);
+                            // لم يحضر → افتح شكل الساعة
+                            openPrepare(person);
                           }
                         };
 
@@ -366,68 +360,31 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                             key={person.id}
                             className={cn(
                               'flex items-center gap-2.5 rounded-xl border px-3 py-2.5 transition-colors',
-                              busy
-                                ? 'border-amber-200 bg-amber-50/70'
-                                : present
-                                  ? 'border-emerald-200 bg-emerald-50/50'
-                                  : 'border-ink-100 bg-white hover:border-ink-200',
+                              busy ? 'border-amber-200 bg-amber-50/70' : isPresent ? 'border-emerald-200 bg-emerald-50/50' : 'border-ink-100 bg-white hover:border-ink-200',
                             )}
                           >
-                            {/* check in / move */}
                             <button
                               type="button"
                               disabled={saving}
-                              onClick={registerOrMove}
-                              aria-label={
-                                selectedOtherBranch
-                                  ? `تسجيل حضور ${person.name} في فرع ${attendanceBranch}`
-                                  : present
-                                    ? `تسجيل انصراف ${person.name}`
-                                    : `تسجيل حضور ${person.name}`
-                              }
+                              onClick={handleClick}
+                              aria-label={isPresent ? `تسجيل انصراف ${person.name}` : `تحضير ${person.name} مع اختيار الوقت`}
                               className={cn(
                                 'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95 disabled:cursor-wait disabled:opacity-60',
-                                busy
-                                  ? 'bg-amber-500 text-white'
-                                  : present
-                                    ? 'bg-emerald-500 text-white'
-                                    : 'border border-ink-200 bg-ink-50 text-ink-300 hover:border-brand-300 hover:text-brand-500',
+                                busy ? 'bg-amber-500 text-white' : isPresent ? 'bg-emerald-500 text-white' : 'border border-ink-200 bg-ink-50 text-ink-300 hover:border-brand-300 hover:text-brand-500',
                               )}
                             >
-                              {saving ? (
-                                <Loader2 className="size-[18px] animate-spin" strokeWidth={2.4} />
-                              ) : busy ? (
-                                <PhoneCall className="size-[18px]" strokeWidth={2.4} />
-                              ) : present ? (
-                                <Check className="size-5" strokeWidth={3} />
-                              ) : (
-                                <UserRound className="size-[18px]" strokeWidth={2} />
-                              )}
+                              {saving ? <Loader2 className="size-[18px] animate-spin" strokeWidth={2.4} /> : busy ? <PhoneCall className="size-[18px]" strokeWidth={2.4} /> : isPresent ? <Check className="size-5" strokeWidth={3} /> : <Clock3 className="size-[18px]" strokeWidth={2} />}
                             </button>
 
-                            {/* name */}
-                            <button
-                              type="button"
-                              disabled={saving}
-                              onClick={registerOrMove}
-                              className="min-w-0 flex-1 text-right disabled:cursor-wait"
-                            >
+                            <button type="button" disabled={saving} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
                               <p className="flex items-center gap-1.5 truncate text-[15px] font-extrabold text-ink-900">
                                 <span className="truncate">{person.name}</span>
                                 {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
                               </p>
-                              <p
-                                className={cn(
-                                  'tnum mt-0.5 truncate text-[12px] font-semibold',
-                                  busy ? 'text-amber-700' : present ? 'text-emerald-700' : 'text-ink-400',
-                                )}
-                              >
-                                {subtitle}
-                              </p>
+                              <p className={cn('tnum mt-0.5 truncate text-[12px] font-semibold', busy ? 'text-amber-700' : isPresent ? 'text-emerald-700' : 'text-ink-400')}>{subtitle}</p>
                             </button>
 
-                            {/* edit time */}
-                            {present && (
+                            {isPresent && (
                               <button
                                 type="button"
                                 disabled={saving}
@@ -440,8 +397,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                               </button>
                             )}
 
-                            {/* copy */}
-                            {present && (
+                            {isPresent && (
                               <button
                                 type="button"
                                 onClick={() => setCopyTarget(person)}
@@ -449,28 +405,15 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
                                 aria-label={`نسخ بيان ${person.name}`}
                                 className={cn(
                                   'grid size-9 shrink-0 place-items-center rounded-xl border transition active:scale-95',
-                                  justCopied
-                                    ? 'border-emerald-500 bg-emerald-500 text-white'
-                                    : 'border-ink-200 bg-white text-ink-400 hover:border-brand-300 hover:text-brand-600',
+                                  justCopied ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-ink-200 bg-white text-ink-400 hover:border-brand-300 hover:text-brand-600',
                                 )}
                               >
-                                {justCopied ? (
-                                  <CheckCheck className="size-4.5" strokeWidth={2.6} />
-                                ) : (
-                                  <Copy className="size-4" strokeWidth={2.2} />
-                                )}
+                                {justCopied ? <CheckCheck className="size-4.5" strokeWidth={2.6} /> : <Copy className="size-4" strokeWidth={2.2} />}
                               </button>
                             )}
 
                             {busy && !selectedOtherBranch && (
-                              <button
-                                type="button"
-                                disabled={saving}
-                                onClick={() => void runAttendanceAction(person, onFree, false)}
-                                className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px] disabled:cursor-wait"
-                              >
-                                إنهاء
-                              </button>
+                              <button type="button" disabled={saving} onClick={() => void runAttendanceAction(person, onFree, false)} className="btn btn-neutral shrink-0 px-2.5 py-2 text-[11px] disabled:cursor-wait">إنهاء</button>
                             )}
                           </div>
                         );
@@ -484,66 +427,71 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
         );
       })}
 
-      {/* The statement always reflects the branch where this row is actually present. */}
-      <Modal
-        open={!!copyTarget}
-        onClose={() => setCopyTarget(null)}
-        title={copyTarget?.name}
-        subtitle={`بيان حضور مسجل في فرع ${currentBranch}`}
-      >
+      <Modal open={!!copyTarget} onClose={() => setCopyTarget(null)} title={copyTarget?.name} subtitle={`بيان حضور مسجل في فرع ${currentBranch}`}>
         <div className="p-5">
-          <button
-            type="button"
-            onClick={() => copyTarget && copyStatement(copyTarget, currentBranch)}
-            className="flex w-full flex-col items-center gap-2 rounded-2xl border-2 border-ink-100 bg-white py-5 transition hover:border-brand-600 hover:bg-brand-50 active:scale-[0.98]"
-          >
+          <button type="button" onClick={() => copyTarget && copyStatement(copyTarget, currentBranch)} className="flex w-full flex-col items-center gap-2 rounded-2xl border-2 border-ink-100 bg-white py-5 transition hover:border-brand-600 hover:bg-brand-50 active:scale-[0.98]">
             <MapPin className="size-6 text-brand-600" strokeWidth={2.2} />
             <span className="font-display text-[16px] font-black text-ink-900">نسخ بيان فرع {currentBranch}</span>
           </button>
         </div>
       </Modal>
 
-      {/* Edit attendance time modal */}
+      {/* ─── Prepare modal with analog clock ─── */}
       <Modal
-        open={!!editingPerson}
-        onClose={() => setEditingPerson(null)}
-        title={editingPerson ? `تعديل وقت حضور ${editingPerson.name}` : 'تعديل وقت الحضور'}
-        subtitle="يمكنك التحكم في وقت حضور أي شخص — الافتراضي هو وقت تحضيره"
+        open={!!preparingPerson}
+        onClose={() => setPreparingPerson(null)}
+        title={preparingPerson ? `تحضير ${preparingPerson.name}` : 'تحضير'}
+        subtitle={`اختر وقت الحضور — الافتراضي وقت التحضير الآن • فرع ${attendanceBranch}`}
       >
-        <div className="space-y-4 p-5">
-          <div className="rounded-xl border border-ink-100 bg-ink-50/70 p-3">
-            <p className="flex items-center gap-1.5 text-[12px] font-bold text-ink-500">
-              <Clock3 className="size-4" />
-              الوقت الحالي المسجل: {editingPerson ? formatTime(salesState[editingPerson.id]?.checkInTime ?? '') : ''}
-            </p>
+        <div className="space-y-5 p-5">
+          <div className="flex flex-col items-center gap-4">
+            <AnalogClock timeStr={prepareTimeStr} />
+            <div className="flex flex-col items-center gap-1">
+              <p className="flex items-center gap-1.5 text-[12px] font-extrabold text-ink-500">
+                <Clock className="size-4" /> شكل الساعة — الوقت المختار
+              </p>
+              <p className="tnum text-[28px] font-black leading-none text-ink-900">{prepareTimeStr}</p>
+              <p className="text-[11px] font-bold text-ink-400">{preparingPerson ? formatTime(timeStrToISO(prepareTimeStr)) : ''} • فرع {attendanceBranch}</p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <label className="text-[12px] font-extrabold text-ink-700">اضبط وقت الحضور</label>
+            <input type="time" value={prepareTimeStr} onChange={(e) => setPrepareTimeStr(e.target.value || nowTimeStr())} className="field w-full text-center text-[18px] font-black tracking-widest" />
+            <div className="grid grid-cols-3 gap-2">
+              <button type="button" onClick={() => setPrepareTimeStr(nowTimeStr())} className="btn btn-neutral py-2.5 text-[12px]"><Clock className="size-4" /> الآن</button>
+              <button type="button" onClick={() => { const { h, m } = parseHM(prepareTimeStr); const d = new Date(); d.setHours(h); d.setMinutes(m - 5); setPrepareTimeStr(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`); }} className="btn btn-neutral py-2.5 text-[12px]">-5 د</button>
+              <button type="button" onClick={() => { const { h, m } = parseHM(prepareTimeStr); const d = new Date(); d.setHours(h); d.setMinutes(m + 5); setPrepareTimeStr(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`); }} className="btn btn-neutral py-2.5 text-[12px]">+5 د</button>
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={() => setPreparingPerson(null)} className="btn btn-neutral flex-1">إلغاء</button>
+            <button type="button" onClick={() => void confirmPrepare()} disabled={!!savingId} className="btn btn-primary flex-1 disabled:opacity-60">
+              {savingId ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} تأكيد التحضير بوقت {prepareTimeStr}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit attendance time modal */}
+      <Modal open={!!editingPerson} onClose={() => setEditingPerson(null)} title={editingPerson ? `تعديل وقت حضور ${editingPerson.name}` : 'تعديل وقت الحضور'} subtitle="يمكنك التحكم في وقت حضور أي شخص">
+        <div className="space-y-5 p-5">
+          <div className="flex flex-col items-center gap-3">
+            <AnalogClock timeStr={editTimeStr} />
+            <div className="rounded-xl border border-ink-100 bg-ink-50/70 px-3 py-2">
+              <p className="flex items-center gap-1.5 text-[12px] font-bold text-ink-500"><Clock3 className="size-4" /> الوقت الحالي المسجل: {editingPerson ? formatTime(salesState[editingPerson.id]?.checkInTime ?? '') : ''}</p>
+            </div>
           </div>
           <div className="flex flex-col gap-2">
             <label className="text-[12px] font-extrabold text-ink-700">اختر وقت الحضور الجديد</label>
-            <input
-              type="time"
-              value={editTimeStr}
-              onChange={(e) => setEditTimeStr(e.target.value || nowTimeStr())}
-              className="field text-center text-[16px] font-black"
-            />
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setEditTimeStr(nowTimeStr())} className="btn btn-neutral flex-1">
-                <Clock className="size-4" />
-                الوقت الحالي الآن
-              </button>
-            </div>
+            <input type="time" value={editTimeStr} onChange={(e) => setEditTimeStr(e.target.value || nowTimeStr())} className="field text-center text-[18px] font-black tracking-widest" />
+            <button type="button" onClick={() => setEditTimeStr(nowTimeStr())} className="btn btn-neutral w-full"><Clock className="size-4" /> الوقت الحالي الآن</button>
           </div>
           <div className="flex gap-2 pt-2">
-            <button type="button" onClick={() => setEditingPerson(null)} className="btn btn-neutral flex-1">
-              إلغاء
-            </button>
-            <button
-              type="button"
-              onClick={() => void runUpdateTime()}
-              disabled={!!savingId}
-              className="btn btn-primary flex-1 disabled:opacity-60"
-            >
-              {savingId ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
-              حفظ الوقت
+            <button type="button" onClick={() => setEditingPerson(null)} className="btn btn-neutral flex-1">إلغاء</button>
+            <button type="button" onClick={() => void runUpdateTime()} disabled={!!savingId} className="btn btn-primary flex-1 disabled:opacity-60">
+              {savingId ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} حفظ الوقت
             </button>
           </div>
         </div>
