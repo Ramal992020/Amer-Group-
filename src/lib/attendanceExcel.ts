@@ -45,7 +45,10 @@ const DIRECTORS_BY_NAME: Record<string, string> = {
 const DIRECTOR_RULES: { matches: (name: string) => boolean; director: string }[] = [
   {
     matches: (name) =>
-      name.startsWith('sayednas') || name.startsWith('سيدناصر') || name.startsWith('سيدنصر'),
+      name.startsWith('sayednas') ||
+      name.startsWith('saydnas') ||
+      name.startsWith('سيدناصر') ||
+      name.startsWith('سيدنصر'),
     director: 'Ahmed Fawzy',
   },
 ];
