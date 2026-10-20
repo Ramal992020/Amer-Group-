@@ -8,6 +8,9 @@ export interface AttendanceWorkbookRow {
   attendance?: SalesState;
 }
 
+const isAbsent = (row: AttendanceWorkbookRow): boolean =>
+  !row.attendance || row.attendance.status === 'absent';
+
 const DIRECTORS: Record<string, string> = {
   ahmed: 'Sayed Magdy',
   perry: 'Sayed Magdy',
@@ -42,7 +45,7 @@ const asTime = (value?: string | null): string => {
  * The template the team works with — unchanged: six columns.
  *   sales | Director | Head | Shift time | time in | Mobile Number
  *
- * Every value is bold and the data rows are pure white — only the two header
+ * Every value is bold; absent names are red and other data cells white. The two header
  * rows keep their brand fills (navy #172943 for «Sales Team», red #C00000 for
  * the column titles). The whole sheet is Arial 20, and both the rows and the
  * columns are AutoFitted to that text (see the AutoFit block below), so a cell
@@ -179,17 +182,25 @@ export const mobileFor = (row: AttendanceWorkbookRow): string => {
 /** Builds the attendance workbook in the same layout as the supplied template. */
 export const createAttendanceWorkbook = (rows: AttendanceWorkbookRow[]): XLSX.WorkBook => {
   const blank = (): string[] => new Array(COLUMN_COUNT).fill('');
+  const present = rows.filter((row) => !isAbsent(row));
+  const absent = rows.filter(isAbsent);
+  const ordered: (AttendanceWorkbookRow | null)[] = [
+    ...present,
+    ...(absent.length ? [null, ...absent] : []),
+  ];
+  const absentStart = 2 + present.length + 1;
   const grid: unknown[][] = [
     ['Sales Team', ...blank().slice(1)],
     [...HEADERS],
-    ...rows.map((row) => {
+    ...ordered.map((row) => {
+      if (!row) return blank();
       const { person, manager, head, attendance } = row;
       return [
         person.name,
         directorFor(manager?.name ?? '', head?.name ?? '', manager?.id ?? ''),
         head?.name ?? '',
         person.shiftTime || '10:00',
-        asTime(attendance?.checkInTime),
+        isAbsent(row) ? 'لم يحضر' : asTime(attendance?.checkInTime),
         mobileFor(row),
       ];
     }),
@@ -231,10 +242,10 @@ export const createAttendanceWorkbook = (rows: AttendanceWorkbookRow[]): XLSX.Wo
               border,
             }
           : {
-              // Data rows are white (the old gray fill is gone) and every value
-              // is bold; only the two header rows keep their brand fills. The
-              // whole sheet shares ONE size (Arial 20) — title, headers, data.
-              fill: { patternType: 'solid', fgColor: { rgb: WHITE } },
+              // Only the absent person's name is red; all other cells stay white.
+              fill: { patternType: 'solid', fgColor: { rgb:
+                c === 0 && r >= absentStart && r < absentStart + absent.length ? 'FF0000' : WHITE,
+              } },
               font: { name: FONT_NAME, sz: FONT_SIZE, bold: true, color: { rgb: INK } },
               alignment: { horizontal: 'center', vertical: 'center' },
               border,
@@ -258,7 +269,7 @@ export interface AttendanceRoster {
 }
 
 /**
- * The rows of ONE branch: everyone who attended (anything but «لم يحضر»),
+ * The rows of ONE branch: the full roster, including absent people,
  * in that branch's check-in order. The roster is the shared one (SITE ⇄ RESTA
  * have the same people), so the same builder works for either branch's map.
  */
@@ -267,7 +278,7 @@ export const attendanceRowsFor = (
   salesState: Record<string, SalesState>,
 ): AttendanceWorkbookRow[] =>
   roster.sales
-    .filter((person) => salesState[person.id]?.status !== 'absent')
+    .slice()
     .sort(
       (a, b) =>
         (salesState[a.id]?.checkInOrder ?? Number.MAX_SAFE_INTEGER) -
@@ -303,6 +314,11 @@ export const mergeAttendanceRows = (...groups: AttendanceWorkbookRow[][]): Atten
         byPerson.set(row.person.id, row);
         continue;
       }
+      // Attendance in either branch beats absence, even without a timestamp.
+      if (isAbsent(current) !== isAbsent(row)) {
+        if (!isAbsent(row)) byPerson.set(row.person.id, row);
+        continue;
+      }
       // A timed check-in beats an untimed one; between two times the earlier
       // (first arrival of the day) wins. Ties keep the row already held.
       const currentMs = checkInMs(current);
@@ -312,6 +328,7 @@ export const mergeAttendanceRows = (...groups: AttendanceWorkbookRow[][]): Atten
     }
   }
   return [...byPerson.values()].sort((a, b) => {
+    if (isAbsent(a) !== isAbsent(b)) return isAbsent(a) ? 1 : -1;
     // Never subtract the timestamps: `Infinity - Infinity` is NaN and breaks
     // the sort for the two rows that carry no time at all.
     const aMs = checkInMs(a) ?? Number.POSITIVE_INFINITY;

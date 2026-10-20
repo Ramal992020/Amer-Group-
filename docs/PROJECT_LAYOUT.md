@@ -75,8 +75,11 @@ The workbook is built by `createAttendanceWorkbook()` in
   `sales | Director | Head | Shift time | time in | Mobile Number`
   with a merged navy `Sales Team` title row (#172943), a red header row
   (#C00000), then a 39-row canvas.
-* **Every cell is bold and the data rows are pure white** — the old grey fill
-  (#BFBFBF) has been removed on purpose; only the two header rows keep a fill.
+* **Every cell is bold.** Attendees come first, followed by one blank row
+  and absent roster members with their director, head, shift and phone details.
+  Absent rows show `لم يحضر` in `time in`; only their name cell is red
+  (#FF0000), with all other data cells white. Missing attendance counts as
+  absence, but attendance in either branch wins when merging the two branches.
 * **One font size for the whole sheet: Arial 20** (`FONT_SIZE` in
   `attendanceExcel.ts`) — the title row, the red header row and every data row
   carry the same size, so a name is readable without zooming. Excel sizes fonts
@@ -99,7 +102,7 @@ The workbook is built by `createAttendanceWorkbook()` in
   roster (SITE ⇄ RESTA) and `mobileFor()` falls back to it for older rows.
 * **One combined file for BOTH branches.** «تحميل Excel الحضور» merges the
   attendance of SITE and RESTA into ONE sheet, downloadable from either branch:
-  `attendanceRowsFor()` builds one branch's attendee rows and
+  `attendanceRowsFor()` builds one branch's full roster rows and
   `mergeAttendanceRows()` (both in `src/lib/attendanceExcel.ts`) keeps **one
   row per person**. On the attendance screen the manager selects SITE or RESTA
   before tapping a person; the app writes that person to the selected account

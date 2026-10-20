@@ -165,7 +165,7 @@ const roster: AttendanceRoster = {
   heads: sample.flatMap((r) => (r.head ? [r.head] : [])),
 };
 
-test('attendanceRowsFor lists only attendees, in check-in order, with manager/head attached', () => {
+test('attendanceRowsFor lists the full roster, in check-in order, with manager/head attached', () => {
   const other: SalesPerson = { id: 'nour', name: 'Nour Sales', managerId: 'ahmed', headId: 'khaled', phone: '' };
   const ghost: SalesPerson = { id: 'ghost', name: 'Ghost Sales', managerId: 'ahmed', headId: 'khaled' };
   const bigRoster: AttendanceRoster = { ...roster, sales: [...roster.sales, other, ghost] };
@@ -177,7 +177,7 @@ test('attendanceRowsFor lists only attendees, in check-in order, with manager/he
     ghost: { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, lastServedAt: null },
   };
   const rows = attendanceRowsFor(bigRoster, state);
-  assert.deepEqual(rows.map((r) => r.person.id), ['nour', 'sam']);
+  assert.deepEqual(rows.map((r) => r.person.id), ['nour', 'sam', 'ghost']);
   assert.equal(rows[0].manager?.id, 'ahmed');
   assert.equal(rows[0].head?.id, 'khaled');
   assert.equal(rows[0].attendance?.checkInOrder, 1);
@@ -225,4 +225,40 @@ test('a timed check-in beats an untimed one, ties keep the first row, and rows s
   assert.equal(merged[1].attendance?.checkInOrder, 4);
   // Rows without any time sink to the bottom instead of breaking the sort.
   assert.equal(merged[3].attendance?.checkInTime, null);
+});
+
+
+test('absentees follow one blank row, with their details and only their names in red', () => {
+  const absent = { ...sample[0], person: { ...sample[0].person, id: 'absent', name: 'Absent Sales' }, attendance: undefined };
+  const sheet = createAttendanceWorkbook([absent, ...sample]).Sheets['Sales Team'];
+  assert.equal(sheet.A3.v, 'Sam Sales');
+  for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    assert.equal(sheet[`${col}4`].v, '');
+    assert.equal(sheet[`${col}4`].s.fill.fgColor.rgb, 'FFFFFF');
+    assert.equal(sheet[`${col}5`].s.fill.fgColor.rgb, col === 'A' ? 'FF0000' : 'FFFFFF');
+  }
+  assert.deepEqual(['A', 'B', 'C', 'D', 'E', 'F'].map(c => sheet[`${c}5`].v),
+    ['Absent Sales', 'Sayed Magdy', 'Khaled Youssef', '10:00', 'لم يحضر', '01000000000']);
+  assert.equal(sheet.A6.s.fill.fgColor.rgb, 'FFFFFF');
+});
+
+test('attendance in either branch beats absence or missing state, including untimed attendance', () => {
+  const present = { ...sample[0], attendance: stateAt(1, null) };
+  const absent = { ...sample[0], attendance: { ...stateAt(1, '2026-10-18T06:00:00Z'), status: 'absent' as const } };
+  const missing = { ...sample[0], attendance: undefined };
+  for (const other of [absent, missing]) {
+    assert.deepEqual(mergeAttendanceRows([other], [present]), [present]);
+    assert.deepEqual(mergeAttendanceRows([present], [other]), [present]);
+  }
+});
+
+test('empty and all-absent workbooks keep the separator and canvas valid', () => {
+  assert.equal(createAttendanceWorkbook([]).Sheets['Sales Team'].A3.v, '');
+  const sheet = createAttendanceWorkbook([{ ...sample[0], attendance: undefined }]).Sheets['Sales Team'];
+  assert.equal(sheet.A3.v, '');
+  assert.equal(sheet.E4.v, 'لم يحضر');
+  assert.equal(sheet.A4.s.fill.fgColor.rgb, 'FF0000');
+  const large = createAttendanceWorkbook(Array.from({ length: 40 }, () => ({ ...sample[0], attendance: undefined }))).Sheets['Sales Team'];
+  assert.equal(large['!ref'], 'A1:F43');
+  assert.equal(large.E43.v, 'لم يحضر');
 });
