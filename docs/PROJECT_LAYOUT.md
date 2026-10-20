@@ -117,6 +117,53 @@ The workbook is built by `createAttendanceWorkbook()` in
 Grepping the build for `Manager Number` must return **0** and `BFBFBF` must be
 absent from the sheet styling.
 
+### Managers who are not printed in the attendance table
+
+Some managers stay on the shared org chart — they keep their team, their
+history, their mobile number in «الهيكل» and their attendance data — but their
+own names must **not** appear in the attendance table (screen or Excel):
+
+| Person | accepted spellings (matched, not printed) |
+| --- | --- |
+| Dina Abdo | `Dina Abdo`, `Dina Abdou`, `دينا عبده` … |
+| Ahmed Sultan | `Ahmed Sultan`, `Ahmed Soltan`, `أحمد سلطان` |
+| Hany Elshenawy | `Hany Elshenawy`, `Hany El Shenawy`, `هاني الشناوي` |
+| Moataz Mandoh | `Moataz Mandoh`, `Moataz Mandouh`, `معتز مندوه` |
+
+The list is `HIDDEN_FROM_ATTENDANCE` in `src/lib/attendanceVisibility.ts`, and
+matching goes through `normalizeAttendanceName()` — case, spacing, hyphens,
+dots, Arabic diacritics and the Arabic letter variants (`أ إ آ` → `ا`,
+`ى` → `ي`, `ة` → `ه`) are all ignored. The filter is applied wherever an
+attendance table is produced, so no path can leak one of those names:
+
+* `attendanceRowsFor()` — one branch's rows (used by the screen export),
+* `mergeAttendanceRows()` — the combined SITE + RESTA file,
+* `createAttendanceWorkbook()` — the last gate before the `.xlsx` is written,
+* `AttendanceBoard` renders `visibleAttendanceSales(sales)` instead of the raw
+  roster, so a hidden manager gets no card; a team left with no visible member
+  disappears, while a hidden manager who still has real sales keeps their team
+  card and their names (hiding them would drop people who do attend).
+
+Deleting those managers from «الهيكل» instead would throw away their team,
+their history and their rotation slot — that is why this is a filter, not a
+deletion. Their data, their phone number and their own attendance stay intact.
+
+### The Director column
+
+`directorFor(managerName, headFallback, managerId)` in `attendanceExcel.ts`
+resolves, in this order:
+
+1. `DIRECTOR_RULES` — name rules that override the Head above the manager.
+   **Sayed Naser reports to Ahmed Fawzy**, so every row of his team prints
+   `Ahmed Fawzy` in `Director` (matches `sayed nas…` and `سيد ناصر`, whatever
+   id/head the team has — ids added from «الهيكل» are generated, not built-in);
+2. the built-in team id (`DIRECTORS`, e.g. `ahmed` → Sayed Magdy);
+3. a known manager name (`DIRECTORS_BY_NAME`);
+4. the Head's name (the old fallback).
+
+Name lookups use `normalizeAttendanceName()`, so case, spacing and the Arabic
+letter variants never break a director.
+
 ## Rotation model — team turns, manual sales choice
 
 SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
