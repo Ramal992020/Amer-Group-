@@ -157,6 +157,8 @@ const asBranch = (value: string | null | undefined): Branch | null => {
   return branch === 'SITE' || branch === 'RESTA' ? branch : null;
 };
 
+const branchLabel = (branch: Branch): string => branch === 'SITE' ? 'الموقع' : 'ريستا';
+
 type RemoteAttendanceResult =
   | { kind: 'ok'; state: PersistedWalkin; updatedAt: number; changed: boolean }
   | { kind: 'busy' }
@@ -1674,6 +1676,63 @@ function WalkInApp({
     await registerAttendanceInBranch(id, selectedBranch, at);
   };
 
+  /** Remove attendance from the selected branch, including the other branch. */
+  const checkOutAttendance = async (id: string, targetBranch?: Branch): Promise<void> => {
+    const selectedBranch = targetBranch ?? asBranch(account);
+    const currentBranch = asBranch(account);
+    const person = sales.find((item) => item.id === id);
+    if (!selectedBranch || !currentBranch || !person) return;
+
+    if (selectedBranch === currentBranch) {
+      changeLocalAttendance(id, 'check-out');
+      return;
+    }
+    if (!syncReadyRef.current) {
+      toast('info', 'انتظر اكتمال المزامنة قبل إلغاء الحضور من الفرع الآخر');
+      return;
+    }
+    if (branchAttendanceInFlightRef.current || pushingRef.current) {
+      toast('info', 'جارٍ حفظ تعديل آخر، حاول بعد لحظات');
+      return;
+    }
+    if (isDirty()) {
+      await flushPushRef.current();
+      if (isDirty()) {
+        toast('info', 'جارٍ مزامنة آخر تعديل، أعد المحاولة بعد لحظات');
+        return;
+      }
+    }
+
+    branchAttendanceInFlightRef.current = true;
+    try {
+      const result = await writeBranchAttendance(selectedBranch, id, 'check-out');
+      if (result.kind === 'busy') {
+        toast('warning', `لا يمكن إلغاء حضور ${person.name} من فرع ${selectedBranch} أثناء مقابلته لعميل`);
+        return;
+      }
+      if (result.kind === 'missing') {
+        toast('error', 'لم يتم العثور على سجل الشخص في الفرع المختار');
+        return;
+      }
+      if (result.kind === 'failed') {
+        toast('error', 'تعذر إلغاء الحضور من الفرع المختار — تحقق من الاتصال وحاول مجدداً');
+        return;
+      }
+      setSyncStatus('synced');
+      setLastSyncAt(Date.now());
+      toast(
+        result.changed ? 'success' : 'info',
+        result.changed
+          ? `تم إلغاء حضور ${person.name} من فرع ${branchLabel(selectedBranch)}`
+          : `${person.name} غير مسجل حضور في فرع ${branchLabel(selectedBranch)}`,
+      );
+    } catch {
+      toast('error', 'تعذر الاتصال بحساب الفرع المختار');
+    } finally {
+      branchAttendanceInFlightRef.current = false;
+    }
+  };
+
   const freeSales = async (id: string, targetBranch?: Branch, at?: string): Promise<void> => {
     const selectedBranch = targetBranch ?? asBranch(account);
     const currentBranch = asBranch(account);
@@ -2339,6 +2398,7 @@ function WalkInApp({
                     account={account}
                     salesState={salesState}
                     onToggle={toggleAttendance}
+                    onCheckOut={checkOutAttendance}
                     onFree={freeSales}
                     onUpdateTime={updateAttendanceTime}
                     heads={activeHeads}
