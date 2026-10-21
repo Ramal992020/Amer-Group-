@@ -975,10 +975,9 @@ function toTurn(
 /**
  * One fixed automatic team cycle shared by RESTA and SITE:
  *
- *   1) Ahmed Yossry        5) Perry
- *   2) Youssef Shehata     6) the team Hala Elfar is in
- *   3) Rewaida             7) the team Gannah Elmalah is in
- *   4) Hany Elshenawy      → back to Ahmed Yossry …
+ *   1) Ahmed Yossry        4) Hany Elshenawy
+ *   2) Youssef Shehata     5) Perry
+ *   3) Rewaida             6) Ahmed Sultan  → back to Ahmed Yossry …
  *
  * Every slot is a PERSON, not a hard-coded team: the team that takes the slot is
  * read from the LIVE roster, so the cycle keeps working when a team is renamed,
@@ -987,19 +986,32 @@ function toTurn(
  *
  * The pending person carried from yesterday stays pinned at #1, then the cycle
  * continues from their own team in this order (Ahmed Yossry → Youssef Shehata →
- * Rewaida → Hany Elshenawy → Perry → Hala Elfar's team → Gannah Elmalah's team →
- * Ahmed Yossry …). A team with nobody available is skipped without re-ordering
- * the others, and a team that already holds an earlier slot is never repeated.
+ * Rewaida → Hany Elshenawy → Perry → Ahmed Sultan's team → Ahmed Yossry …).
+ * A team with nobody available is skipped without re-ordering the others, and a
+ * team that already holds an earlier slot is never repeated.
+ *
+ * A team that no longer takes part (Gannah Elmalah's team) simply stays outside
+ * the cycle; it is not deleted from the org chart.
+ *
+ * The last slot is ONE team known under two names: «تيم أحمد سلطان» is the same
+ * team that Hala Elfar is in, so the slot lists her as an alias and resolves to
+ * that team whichever of the two names «الهيكل» saved it under.
  */
-export const AUTOMATIC_TEAM_ORDER = [
+export interface AutomaticTeamSlot {
+  readonly id: string;
+  readonly name: string;
+  /** Other names of the SAME team (a person in it, an old spelling, …). */
+  readonly aliases?: readonly string[];
+}
+
+export const AUTOMATIC_TEAM_ORDER: readonly AutomaticTeamSlot[] = [
   { id: 'ahmed', name: 'Ahmed Yossry' },
   { id: 'shehata', name: 'Youssef Shehata' },
   { id: 'rewaida', name: 'Rewaida' },
   { id: 'hany-elshenawy', name: 'Hany Elshenawy' },
   { id: 'perry', name: 'Perry' },
-  { id: 'hala-elfar', name: 'Hala Elfar' },
-  { id: 'gannah-elmalah', name: 'Gannah Elmalah' },
-] as const;
+  { id: 'ahmed-sultan', name: 'Ahmed Sultan', aliases: ['Hala Elfar'] },
+];
 
 export function usesFixedTeamRotation(workspace?: string): boolean {
   const normalized = workspace?.trim().toUpperCase();
@@ -1016,14 +1028,16 @@ export function createNewDaySalesState(
 
 const normalizeTeamName = (name: string): string => name.trim().toLowerCase().replace(/[\s_-]+/g, '');
 
+/** Every name a slot can be saved under — its own name plus its aliases. */
+const slotNames = (slot: AutomaticTeamSlot): string[] => [slot.name, ...(slot.aliases ?? [])];
+
 function automaticTeamIndex(managerId: string, managerName: string): number {
   const id = normalizeTeamName(managerId);
   const name = normalizeTeamName(managerName);
-  return AUTOMATIC_TEAM_ORDER.findIndex((team) =>
-    id === normalizeTeamName(team.id) ||
-    id === normalizeTeamName(team.name) ||
-    name === normalizeTeamName(team.name),
-  );
+  return AUTOMATIC_TEAM_ORDER.findIndex((team) => {
+    const names = slotNames(team).map(normalizeTeamName);
+    return id === normalizeTeamName(team.id) || names.includes(id) || names.includes(name);
+  });
 }
 
 // ───────────── Team (manager) turns — SITE ⇄ RESTA ─────────────
@@ -1034,34 +1048,78 @@ function automaticTeamIndex(managerId: string, managerName: string): number {
 // only decides the team, so nothing here can be mistaken for an assignment.
 
 /**
- * The team one automatic slot points at, read from the LIVE roster:
- *  1. the team whose id is the slot id (renames never break it);
- *  2. the team whose (or whose manager's) name is the slot name — including the
- *     legacy built-in slots and any custom id that spells the same name;
- *  3. otherwise the team the PERSON belongs to — so a slot can name somebody
- *     who is only a member of a team («التيم اللي فيه فلان»).
+ * The team one automatic slot points at, read from the LIVE roster.
+ *
+ * A slot names a PERSON, so the roster can spell their team in four ways and
+ * every one of them must find the SAME team:
+ *  1. the team id is the slot id (or an alias spelled as an id) — renames never
+ *     break it;
+ *  2. the named person is a MEMBER of the team («التيم اللي فيه فلان») — this is
+ *     the strongest and most common case, e.g. «تيم Ahmed Sultan» whose sales is
+ *     Hala Elfar (every automatic slot also holds the manager's own row);
+ *  3. the team itself is NAMED after the slot (a team renamed to «Ahmed Sultan»
+ *     whose id no longer says so).
+ *
+ * Candidate teams are therefore collected and scored instead of taking the
+ * first name match: a team that merely carries the name (an older, empty team
+ * left behind) must never win over the team the person is actually in.
+ *
+ * The last slot names a person AND an alias (`Ahmed Sultan` / `Hala Elfar`):
+ * they are one team, whichever of the two names it was saved under and whoever
+ * of the two is the manager.
  */
+/**
+ * How strongly a team matches a slot. The slot's OWN name/id always beats an
+ * alias, so a leftover team named after the alias can never take the slot from
+ * the team the slot's person is really in.
+ */
+const SLOT_SCORE = {
+  ownId: 6,
+  ownMember: 5,
+  ownName: 4,
+  aliasId: 3,
+  aliasMember: 2,
+  aliasName: 1,
+} as const;
+
 function teamForAutomaticSlot(
-  slot: { id: string; name: string },
+  slot: AutomaticTeamSlot,
   index: number,
   managersList: ManagerTeam[],
   salesList: SalesPerson[],
 ): ManagerTeam | null {
-  const byId = managersList.find((m) => m.id === slot.id && !isTeamDisabled(m, salesList));
-  if (byId) return byId;
-  const byName = managersList.find(
-    (m) => !isTeamDisabled(m, salesList) && automaticTeamIndex(m.id, m.name) === index,
-  );
-  if (byName) return byName;
-  const wanted = normalizeTeamName(slot.name);
-  const member = salesList.find(
-    (s) =>
-      !s.disabled &&
-      (normalizeTeamName(s.name) === wanted || normalizeTeamName(s.id) === normalizeTeamName(slot.id)),
-  );
-  if (!member) return null;
-  const team = managersList.find((m) => m.id === member.managerId) ?? null;
-  return team && !isTeamDisabled(team, salesList) ? team : null;
+  const own = normalizeTeamName(slot.name);
+  const ownId = normalizeTeamName(slot.id);
+  const aliases = (slot.aliases ?? []).map(normalizeTeamName);
+  const hasMemberNamed = (team: ManagerTeam, wanted: string[]): boolean =>
+    salesList.some(
+      (person) =>
+        !person.disabled &&
+        person.managerId === team.id &&
+        (wanted.includes(normalizeTeamName(person.name)) || wanted.includes(normalizeTeamName(person.id))),
+    );
+  const scoreOf = (team: ManagerTeam): number => {
+    if (normalizeTeamName(team.id) === ownId) return SLOT_SCORE.ownId;
+    if (hasMemberNamed(team, [own])) return SLOT_SCORE.ownMember;
+    if (normalizeTeamName(team.name) === own) return SLOT_SCORE.ownName;
+    if (aliases.includes(normalizeTeamName(team.id))) return SLOT_SCORE.aliasId;
+    if (hasMemberNamed(team, aliases)) return SLOT_SCORE.aliasMember;
+    if (aliases.includes(normalizeTeamName(team.name))) return SLOT_SCORE.aliasName;
+    if (automaticTeamIndex(team.id, team.name) === index) return SLOT_SCORE.aliasName;
+    return 0;
+  };
+
+  let best: ManagerTeam | null = null;
+  let bestScore = 0;
+  managersList.forEach((team) => {
+    if (isTeamDisabled(team, salesList)) return;
+    const score = scoreOf(team);
+    if (score > bestScore) {
+      best = team;
+      bestScore = score;
+    }
+  });
+  return best;
 }
 
 /**
