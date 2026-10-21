@@ -14,6 +14,7 @@ import type { AttendanceWorkbookRow } from '../lib/attendanceExcel';
 import { visibleAttendanceSales } from '../lib/attendanceVisibility';
 
 type Branch = 'SITE' | 'RESTA';
+const branchDisplayName = (branch: Branch): string => branch === 'SITE' ? 'الموقع' : 'ريستا';
 
 // طريقة عرض الأسماء في تبويب الحضور: طولي (قائمة صفوف) أو عرضي (شبكة كروت)
 type LayoutMode = 'vertical' | 'grid';
@@ -306,7 +307,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
           : busy
             ? `مشغول الآن في ${attendanceBranch}`
             : isPresent
-              ? `حاضر في ${attendanceBranch} — ${st?.checkInTime ? formatTime(st.checkInTime) : 'مسجل اليوم'}`
+              ? `مسجل حضور في فرع ${branchDisplayName(attendanceBranch)} — ${st?.checkInTime ? formatTime(st.checkInTime) : 'مسجل اليوم'}`
               : sourceIsPresent
                 ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} مع اختيار الوقت`
                 : `اضغط لتسجيله في فرع ${attendanceBranch} مع اختيار الوقت`
@@ -352,7 +353,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
     const statusActionLabel = selectedOtherBranch
       ? isPresent
-        ? `مسجل حضور في فرع ${attendanceBranch}`
+        ? `مسجل حضور في فرع ${branchDisplayName(attendanceBranch)}`
         : `تحضير ${person.name} في فرع ${attendanceBranch} مع اختيار الوقت`
       : isPresent
         ? `تسجيل انصراف ${person.name}`
@@ -422,7 +423,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
               <p className="flex flex-wrap items-center gap-1.5 text-[14px] font-extrabold text-ink-900">
                 <span className="min-w-0 whitespace-normal break-words">{person.name}</span>
                 {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
-                {selectedOtherBranch && isPresent && <span className="badge badge-blue shrink-0">{attendanceBranch}</span>}
+                {selectedOtherBranch && isPresent && <span className="badge badge-blue shrink-0">فرع {branchDisplayName(attendanceBranch)}</span>}
               </p>
             </button>
           </div>
@@ -451,7 +452,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
           <p className="flex items-center gap-1.5 truncate text-[15px] font-extrabold text-ink-900">
             <span className="truncate">{person.name}</span>
             {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
-            {selectedOtherBranch && isPresent && <span className="badge badge-blue shrink-0">{attendanceBranch}</span>}
+            {selectedOtherBranch && isPresent && <span className="badge badge-blue shrink-0">فرع {branchDisplayName(attendanceBranch)}</span>}
           </p>
           <p className={cn('tnum mt-0.5 truncate text-[12px] font-semibold', subtitleTone)}>{subtitle}</p>
         </button>

@@ -114,7 +114,7 @@ import {
   SHARED_ORG_ACCOUNT,
 } from './lib/sync';
 import type { SyncConfig, SyncStatus } from './lib/sync';
-import { CurrentTurn, TurnShiftNotice } from './components/CurrentTurn';
+import { CurrentTurn } from './components/CurrentTurn';
 import type { BranchVisit, TeamMemberOption, UpcomingTeam } from './components/CurrentTurn';
 import { AttendanceBoard } from './components/AttendanceBoard';
 import { HistoryPanel } from './components/HistoryPanel';
@@ -2115,13 +2115,6 @@ function WalkInApp({
                               </p>
                             </div>
                           </div>
-                          {turnShifted && (
-                            <TurnShiftNotice
-                              onTurnName={onTurnTeam.name}
-                              servingName={nextTeam?.managerName ?? null}
-                              shifted={shiftedTeams}
-                            />
-                          )}
                           <button
                             onClick={() => setAssignOpen(true)}
                             disabled={!nextTeam}
