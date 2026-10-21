@@ -435,6 +435,8 @@ body {
 .theme-dark .surface-hover:hover { border-color: #444d5b; }
 .theme-dark .bg-ink-50\/70 { background-color: rgb(23 27 35 / 0.72); }
 .theme-dark .bg-brand-50 { background-color: #3b2028; }
+.theme-dark .bg-brand-50\/60 { background-color: #352127; }
+.theme-dark .border-brand-200 { border-color: #62323a; }
 .theme-dark .bg-brand-600 { color: #fff; }
 .theme-dark .border-amber-200 { border-color: #6f5228; }
 .theme-dark .bg-amber-50,
