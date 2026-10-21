@@ -521,11 +521,17 @@ function WalkInApp({
       // The turn-order settings ride the same freshness guard as the roster,
       // so an older snapshot can never undo a newer cycle choice.
       setCycleSettings(normalizeTeamCycle(state.teamCycle));
+      // manualOrder (the per-branch manager drag-order) is closely tied to
+      // the roster and the cycle mode — an older snapshot that carries a
+      // stale manualOrder must never overwrite a newer local one, the same
+      // way a stale cycle choice is rejected above.  Without this guard a
+      // pull from another device could silently reset the custom order the
+      // user arranged on this phone.
+      if (Array.isArray(state.manualOrder)) setManualOrder(state.manualOrder);
       setOrgRevision(incomingOrgRev);
     } else if (state.customHeads) {
       dirtySeqRef.current += 1;
     }
-    if (Array.isArray(state.manualOrder)) setManualOrder(state.manualOrder);
     if (Array.isArray(state.undoStack)) setUndoStack(state.undoStack);
     savePersisted(state, account);
     lastSavedStateRef.current = state;
