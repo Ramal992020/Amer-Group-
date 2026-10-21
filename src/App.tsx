@@ -2058,53 +2058,6 @@ function WalkInApp({
                   </button>
                 </nav>
 
-                {/* اليوم في أرقام — مؤشرات مختصرة قبل تفاصيل الدور */}
-                {booting ? (
-                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                    {[0, 1, 2, 3].map((i) => (
-                      <SkeletonCard key={i} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="stagger grid grid-cols-2 gap-3 xl:grid-cols-4">
-                    <StatCard
-                      label="إجمالي اليوم"
-                      value={totalToday}
-                      hint="عميل تم توزيعه"
-                      accent="red"
-                      compact
-                      icon={<Zap className="size-5" strokeWidth={2.2} />}
-                    />
-                    <StatCard
-                      label="متاح الآن"
-                      value={availableCount}
-                      hint="جاهز لاستقبال عميل"
-                      accent="green"
-                      compact
-                      icon={<UserCheck className="size-5" strokeWidth={2.2} />}
-                      progress={activeSales.length ? (availableCount / activeSales.length) * 100 : 0}
-                    />
-                    <StatCard
-                      label="مشغول"
-                      value={busyList.length}
-                      hint="في مقابلة حالياً"
-                      accent="amber"
-                      compact
-                      icon={<PhoneCall className="size-5" strokeWidth={2.2} />}
-                      progress={activeSales.length ? (busyList.length / activeSales.length) * 100 : 0}
-                    />
-                    <StatCard
-                      label="لم يحضر"
-                      value={absentCount}
-                      hint={`من أصل ${activeSales.length} فرد`}
-                      accent="gray"
-                      compact
-                      icon={<Users className="size-5" strokeWidth={2.2} />}
-                      progress={activeSales.length ? (absentCount / activeSales.length) * 100 : 0}
-                    />
-                  </div>
-                )}
-
                 {/* current turn + quick actions */}
                 <div className="grid gap-4">
                   <section className="surface anim-fade-up overflow-hidden">
@@ -2245,6 +2198,53 @@ function WalkInApp({
 
                   <ClientExcelBuilder account={account} sales={activeSales} />
                 </div>
+
+                {/* ملخص أرقام اليوم — في نهاية الصفحة */}
+                {booting ? (
+                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                    {[0, 1, 2, 3].map((i) => (
+                      <SkeletonCard key={i} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="stagger grid grid-cols-2 gap-3 xl:grid-cols-4">
+                    <StatCard
+                      label="إجمالي اليوم"
+                      value={totalToday}
+                      hint="عميل تم توزيعه"
+                      accent="red"
+                      compact
+                      icon={<Zap className="size-5" strokeWidth={2.2} />}
+                    />
+                    <StatCard
+                      label="متاح الآن"
+                      value={availableCount}
+                      hint="جاهز لاستقبال عميل"
+                      accent="green"
+                      compact
+                      icon={<UserCheck className="size-5" strokeWidth={2.2} />}
+                      progress={activeSales.length ? (availableCount / activeSales.length) * 100 : 0}
+                    />
+                    <StatCard
+                      label="مشغول"
+                      value={busyList.length}
+                      hint="في مقابلة حالياً"
+                      accent="amber"
+                      compact
+                      icon={<PhoneCall className="size-5" strokeWidth={2.2} />}
+                      progress={activeSales.length ? (busyList.length / activeSales.length) * 100 : 0}
+                    />
+                    <StatCard
+                      label="لم يحضر"
+                      value={absentCount}
+                      hint={`من أصل ${activeSales.length} فرد`}
+                      accent="gray"
+                      compact
+                      icon={<Users className="size-5" strokeWidth={2.2} />}
+                      progress={activeSales.length ? (absentCount / activeSales.length) * 100 : 0}
+                    />
+                  </div>
+                )}
 
               </div>
             )}
