@@ -252,11 +252,22 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
   instead of the order: #1 (the team on turn) and the team that served last
   (the engine always resumes *after* it — `lastServedManagerId`). Their arrows
   are disabled and `moveInOrder()` refuses those moves.
-* «الدور من هنا» (the small play button on a row) is the only way to change who
-  is on turn: `orderWithTurnAt()` saves the cycle with that team moved right
-  behind the last-served one, and a carried turn for another team is dropped —
-  the engine, the tab and «الرئيسية» then show that team immediately. The team
-  that served last cannot be chosen (`orderWithTurnAt` returns `null`).
+* «الدور من هنا» (the small ▶ button on a row) is the only way to change who is
+  on turn, and it **never touches the order**: it stores `PinnedTurn`
+  (`turnPinFor()` → `PersistedWalkin.pinnedTurn`, per branch like attendance)
+  and `computeTurnPlan` puts that team on turn (`TurnPlan.onTurnPinned`). Once
+  the pinned team has served, the pin is released (`confirmWith`) and the
+  rotation simply continues with the NEXT team of the same cycle — press ▶ on
+  Hany Elshenawy and the built-in order gives Perry, then Ahmed Sultan, then
+  Ahmed Yossry, … exactly as if the day had reached Hany normally. The pin
+  overrides the carried turn and the "already served today" rule (the manager
+  asked for it explicitly), it is ignored when the team is not in the cycle,
+  and it is cleared by «بدء يوم جديد» (a still-pending pinned team is carried to
+  the new day instead) and by «إلغاء التثبيت» on the tab / «الرئيسية».
+  A pinned team with nobody present is still shown as the team on turn, and the
+  client goes to the next team with somebody free (`shiftedTeams`).
+* The order tab is rotated by `turnPlan.onTurn` (not by the serving team), so a
+  pinned turn is row #1 there as well, matching «الرئيسية» word for word.
 * The copy text is built by `receiptText()` (`src/lib/walkin.ts`), which
   `DoneReceipt` also displays:
   * normal visit: `Walk in (Site) Done ✅ / Sales : X Done✅ / Manager : … / Head : … / Next : …`

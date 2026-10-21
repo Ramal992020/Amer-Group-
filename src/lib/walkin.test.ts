@@ -14,9 +14,9 @@ import {
   computeTurnPlan,
   createNewDaySalesState,
   defaultSalesState,
+  hydrate,
   loadPersisted,
   mirrorOrgChart,
-  orderWithTurnAt,
   predictFullRound,
   receiptText,
   savePersisted,
@@ -25,6 +25,7 @@ import {
   swapInCustomOrder,
   teamOrderFrom,
   teamRoundFrom,
+  turnPinFor,
   visitHeadline,
 } from './walkin.ts';
 import type {
@@ -35,6 +36,7 @@ import type {
   ManagerTeam,
   OrgChart,
   PersistedWalkin,
+  PinnedTurn,
   RotationOptions,
   SalesPerson,
   SalesState,
@@ -1013,41 +1015,85 @@ test('moving a team on the order tab really moves the turn (engine and tab agree
   assert.equal(plan.serving?.managerId, moved[1]);
 });
 
-test('«الدور من هنا» puts the chosen team on turn immediately', () => {
+test('«الدور من هنا» only moves the TURN — the order keeps running as it is', () => {
   const f = fixture();
   const served = teamHistory(f, 'ahmed');
   const history = [served];
 
   // Without it: the cycle continues after Ahmed Yossry → Shehata serves.
-  assert.equal(
-    plan(f, history).serving?.managerId,
-    'shehata',
-  );
+  assert.equal(plan(f, history).serving?.managerId, 'shehata');
 
-  // The manager taps the play button on Perry's team.
-  const order = orderWithTurnAt(f.managers, 'perry', served.managerId, undefined, f.sales)!;
-  const saved: TeamCycleSettings = { mode: 'custom', order };
-  assert.equal(order[0], 'perry');
-  assert.equal(plan(f, history, { cycle: saved }).serving?.managerId, 'perry');
-  // …and the list on the tab starts with that very team.
-  assert.equal(teamRoundFrom(f.managers, 'perry', saved, f.sales)[0].id, 'perry');
-  // Every other team keeps its place: only Perry jumped the queue.
+  // The manager taps ▶ on Hany Elshenawy's team.
+  const pin: PinnedTurn = turnPinFor(f.managers.find((m) => m.id === HANY)!, f.heads);
+  assert.equal(plan(f, history, { pinnedTurn: pin }).serving?.managerId, HANY);
+  assert.equal(plan(f, history, { pinnedTurn: pin }).onTurn?.id, HANY);
+  assert.equal(plan(f, history, { pinnedTurn: pin }).onTurnPinned, true);
+
+  // The ORDER is untouched: once Hany's team has served, the rotation simply
+  // continues with the next team of the built-in cycle (Perry → Sultan → …),
+  // NOT with whatever followed the last served team before the press.
+  const afterHany = [served, teamHistory(f, HANY)];
   assert.deepEqual(
-    order.filter((id) => id !== 'perry'),
-    teamOrderFrom(f.managers, 'shehata', undefined, f.sales).map((t) => t.id).filter((id) => id !== 'perry'),
+    [...Array(4)].reduce<{ ids: string[]; history: Assignment[] }>(
+      (acc) => {
+        const next = plan(f, acc.history).serving?.managerId;
+        return next
+          ? { ids: [...acc.ids, next], history: [...acc.history, teamHistory(f, next)] }
+          : acc;
+      },
+      { ids: [], history: afterHany },
+    ).ids,
+    ['perry', SULTAN, 'ahmed', 'shehata'],
   );
 
-  // A team cannot succeed itself — the served team's turn comes after a round.
-  assert.equal(orderWithTurnAt(f.managers, 'ahmed', 'ahmed', undefined, f.sales), null);
-  // A team outside the cycle cannot be pulled in this way.
-  assert.equal(orderWithTurnAt(f.managers, GANNAH, 'ahmed', undefined, f.sales), null);
+  // A pinned team holds the turn even if it already served today…
+  assert.equal(plan(f, [teamHistory(f, HANY)], { pinnedTurn: pin }).serving?.managerId, HANY);
+  // …and it works the same on a custom order, without touching its list.
+  const custom: TeamCycleSettings = { mode: 'custom', order: ['ahmed', 'perry', SULTAN, HANY] };
+  assert.deepEqual(
+    teamOrderFrom(f.managers, undefined, custom, f.sales).map((t) => t.id),
+    ['ahmed', 'perry', SULTAN, HANY],
+  );
+  assert.equal(plan(f, history, { pinnedTurn: pin, cycle: custom }).serving?.managerId, HANY);
 });
 
-test('«الدور من هنا» also works on a fresh day (nothing served yet)', () => {
+test('a pinned turn with nobody present is shown and shifted to the next team', () => {
   const f = fixture();
-  const order = orderWithTurnAt(f.managers, 'perry', null, undefined, f.sales)!;
-  const saved: TeamCycleSettings = { mode: 'custom', order };
-  assert.equal(plan(f, [], { cycle: saved }).serving?.managerId, 'perry');
+  const pin = turnPinFor(f.managers.find((m) => m.id === HANY)!, f.heads);
+  f.sales.filter((s) => s.managerId === HANY).forEach((s) => (f.state[s.id].status = 'absent'));
+
+  const turn = plan(f, [], { pinnedTurn: pin });
+  assert.equal(turn.onTurn?.id, HANY);
+  assert.equal(turn.onTurnPinned, true);
+  assert.equal(turn.serving?.managerId, 'perry');
+  assert.deepEqual(turn.shiftedTeams.map((t) => t.managerId), [HANY]);
+});
+
+test('a pinned turn is per-branch state that survives a save/load', () => {
+  const f = fixture();
+  const pin = turnPinFor(f.managers.find((m) => m.id === HANY)!, f.heads);
+  const state: PersistedWalkin = {
+    salesState: f.state,
+    history: [],
+    counter: 0,
+    seq: 0,
+    startingHead: 'khaled',
+    carryOver: null,
+    pinnedTurn: pin,
+    lastResetAt: null,
+    customHeads: f.heads,
+    customManagers: f.managers,
+    customSales: f.sales,
+    skippedIds: [],
+    undoStack: [],
+  };
+  withMemoryLocalStorage(() => {
+    savePersisted(state, 'RESTA');
+    assert.equal(loadPersisted('RESTA').pinnedTurn?.managerId, HANY);
+    // A malformed / empty pin is dropped instead of breaking the rotation.
+    const cleaned = hydrate({ ...state, pinnedTurn: { managerId: '  ' } as PinnedTurn });
+    assert.equal(cleaned.pinnedTurn, null);
+  });
 });
 
 test('moving a team on the order tab edits the saved custom order', () => {
