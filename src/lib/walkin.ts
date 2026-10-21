@@ -412,6 +412,53 @@ export interface CarryOver {
   fromDate: string;
 }
 
+/**
+ * The team the manager put ON TURN by hand («الدور من هنا» ▶ on
+ * «ترتيب المديرين»).
+ *
+ * It pins WHOSE turn it is — it never touches the cycle. The order stays
+ * exactly as it was (auto or custom), so once the pinned team has served the
+ * rotation simply continues with the next team of that order — e.g. pressing ▶
+ * on Hany Elshenawy makes his team serve now and Perry, then Ahmed Sultan, …
+ * follow, with no re-ordering anywhere.
+ *
+ * Cleared when the pinned team serves, on «بدء يوم جديد», and when the turn is
+ * reset. It is per branch (like attendance and the carried turn).
+ */
+export interface PinnedTurn {
+  managerId: string;
+  managerName: string;
+  headId: string;
+  headName: string;
+  /** When it was pinned (ISO) — display only. */
+  at: string;
+}
+
+/** Accept any saved/remote value and return a safe pin (or null). */
+export function normalizePinnedTurn(value?: PinnedTurn | null): PinnedTurn | null {
+  if (!value || typeof value !== 'object') return null;
+  const managerId = typeof value.managerId === 'string' ? value.managerId.trim() : '';
+  if (!managerId) return null;
+  return {
+    managerId,
+    managerName: typeof value.managerName === 'string' ? value.managerName : managerId,
+    headId: typeof value.headId === 'string' ? value.headId : '',
+    headName: typeof value.headName === 'string' ? value.headName : '',
+    at: typeof value.at === 'string' ? value.at : '',
+  };
+}
+
+/** Build a pin for a team. */
+export function turnPinFor(team: ManagerTeam, headsList: HeadGroup[] = HEADS): PinnedTurn {
+  return {
+    managerId: team.id,
+    managerName: team.name,
+    headId: team.headId,
+    headName: headsList.find((h) => h.id === team.headId)?.name ?? team.headId,
+    at: new Date().toISOString(),
+  };
+}
+
 // ───────────────────────── Turn-order settings («الترتيب» tab) ─────────────────────────
 
 /**
@@ -458,6 +505,11 @@ export interface RotationOptions {
    * means the built-in fixed cycle — exactly the pre-settings behavior.
    */
   cycle?: TeamCycleSettings | null;
+  /**
+   * A team pinned on turn by hand («الدور من هنا»). It only moves the TURN, not
+   * the order: the cycle continues normally after the pinned team has served.
+   */
+  pinnedTurn?: PinnedTurn | null;
 }
 
 /** Compact action record so undo restores the exact queue position, even after reloads. */
@@ -466,6 +518,8 @@ export interface UndoEntry {
   prevState: SalesState;
   skippedIds: string[];
   carryOver: CarryOver | null;
+  /** The hand-pinned turn («الدور من هنا») before this action, if any. */
+  pinnedTurn?: PinnedTurn | null;
   seq: number;
   counter: number;
 }
@@ -477,6 +531,8 @@ export interface PersistedWalkin {
   seq: number;
   startingHead: string;
   carryOver: CarryOver | null;
+  /** Hand-pinned turn («الدور من هنا») — survives reloads and syncs with the day. */
+  pinnedTurn?: PinnedTurn | null;
   lastResetAt: string | null;
   customHeads?: HeadGroup[];
   customManagers?: ManagerTeam[];
@@ -653,6 +709,7 @@ export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
     seq: typeof parsed.seq === 'number' ? parsed.seq : 0,
     startingHead: parsed.startingHead || heads[0]?.id || 'khaled',
     carryOver: parsed.carryOver ?? null,
+    pinnedTurn: normalizePinnedTurn(parsed.pinnedTurn),
     lastResetAt: parsed.lastResetAt ?? null,
     customHeads: heads,
     customManagers: managers,
@@ -1252,6 +1309,8 @@ export interface TurnPlan {
   onTurn: ManagerTeam | null;
   serving: TeamTurn | null;
   shiftedTeams: ShiftedTeam[];
+  /** True when `onTurn` comes from the hand-pinned turn («الدور من هنا»). */
+  onTurnPinned: boolean;
 }
 
 /**
@@ -1269,7 +1328,7 @@ export function computeTurnPlan(
   headsList: HeadGroup[] = HEADS,
   options: RotationOptions = {},
 ): TurnPlan {
-  const empty: TurnPlan = { onTurn: null, serving: null, shiftedTeams: [] };
+  const empty: TurnPlan = { onTurn: null, serving: null, shiftedTeams: [], onTurnPinned: false };
   const active = activeOrg(headsList, managersList, salesList);
   const cycleSettings = normalizeTeamCycle(options.cycle);
   const isCustom = cycleSettings.mode === 'custom';
@@ -1289,6 +1348,16 @@ export function computeTurnPlan(
   const carriedTeam = carriedIndex >= 0 ? cycle[carriedIndex] : null;
   const servedToday = (managerId: string) => history.some((a) => a.managerId === managerId);
 
+  // The hand-pinned turn («الدور من هنا»): the team the manager picked holds the
+  // turn now, whatever the cycle says — the ORDER is untouched, so the rotation
+  // carries on normally after that team has served.
+  const pinned = options.pinnedTurn;
+  const pinnedIndex =
+    pinned && (pinned.managerId || pinned.managerName)
+      ? indexInCycle(pinned.managerId, pinned.managerName)
+      : -1;
+  const pinnedTeam = pinnedIndex >= 0 ? cycle[pinnedIndex] : null;
+
   let previousIndex = -1;
   for (let i = history.length - 1; i >= 0; i--) {
     const index = indexInCycle(history[i].managerId, history[i].managerName);
@@ -1305,8 +1374,9 @@ export function computeTurnPlan(
   const carryOnTurn = carryPending && (previousIndex < 0 || hasMembers(carriedTeam!));
   const start =
     previousIndex >= 0 ? (previousIndex + 1) % cycle.length : carriedIndex >= 0 ? carriedIndex : 0;
-  const onTurnIndex = carryOnTurn ? carriedIndex : start;
+  const onTurnIndex = pinnedTeam ? pinnedIndex : carryOnTurn ? carriedIndex : start;
   const onTurn = cycle[onTurnIndex] ?? null;
+  const onTurnPinned = Boolean(pinnedTeam) && onTurn?.id === pinnedTeam?.id;
 
   const shiftedTeams: ShiftedTeam[] = [];
   let serving: TeamTurn | null = null;
@@ -1326,7 +1396,9 @@ export function computeTurnPlan(
       });
       continue;
     }
-    if (carryOnTurn && team.id === carriedTeam?.id) {
+    if (onTurnPinned && team.id === pinnedTeam?.id) {
+      serving = teamTurn(team, `الدور المثبَّت • تيم ${team.name}`, false, null, active.heads);
+    } else if (!pinnedTeam && carryOnTurn && team.id === carriedTeam?.id) {
       const person = carried?.salesId ? active.sales.find((s) => s.id === carried.salesId) ?? null : null;
       const present =
         person && person.managerId === team.id && salesState[person.id]?.status === 'available'
@@ -1343,7 +1415,7 @@ export function computeTurnPlan(
 
   // Nobody free anywhere: every team of the cycle is passed over.
   if (!serving) shiftedTeams.forEach((team) => (team.reason = 'allAbsent'));
-  return { onTurn, serving, shiftedTeams };
+  return { onTurn, serving, shiftedTeams, onTurnPinned };
 }
 
 /**
@@ -1398,40 +1470,6 @@ export function teamRoundFrom(
   salesList: SalesPerson[] = SALES,
 ): ManagerTeam[] {
   return teamOrderFrom(managersList, startManagerId ?? undefined, cycle, salesList);
-}
-
-/**
- * The cycle order that puts `teamId` ON TURN right now — what «الدور من هنا»
- * on «ترتيب المديرين» saves.
- *
- * The engine always continues AFTER the team that served last, so a turn can
- * only be pulled to the front by moving it right behind that team: the order is
- * the current cycle (rotated to the point the engine resumes from) with the
- * chosen team moved to the top, and every other team keeps its relative place.
- * Because the engine reads the same stored order, the tab and «الرئيسية» show
- * the same team immediately.
- *
- * Returns `null` when the team is not in the cycle, or when it is the team that
- * served last (a team can never succeed itself — that turn comes after a full
- * round).
- */
-export function orderWithTurnAt(
-  managersList: ManagerTeam[] = MANAGERS,
-  teamId: string,
-  lastServedManagerId?: string | null,
-  cycle?: TeamCycleSettings | null,
-  salesList: SalesPerson[] = SALES,
-): string[] | null {
-  const teams = resolveCycle(managersList, cycle, salesList).filter(
-    (team): team is ManagerTeam => Boolean(team),
-  );
-  if (!teams.some((team) => team.id === teamId)) return null;
-  if (lastServedManagerId && lastServedManagerId === teamId) return null;
-  const resumeAt = lastServedManagerId
-    ? successorTeam(managersList, lastServedManagerId, cycle, salesList)
-    : teams[0] ?? null;
-  const base = teamOrderFrom(managersList, resumeAt?.id, cycle, salesList).map((t) => t.id);
-  return [teamId, ...base.filter((id) => id !== teamId)];
 }
 
 /**

@@ -35,8 +35,8 @@ import {
   successorTeam,
   canAdoptRemoteOrg,
   swapInCustomOrder,
-  orderWithTurnAt,
   teamRoundFrom,
+  turnPinFor,
   availableTeamMembers,
   usesFixedTeamRotation,
   carryOverForNewDay,
@@ -81,6 +81,7 @@ import type {
   SalesPerson,
   SalesState,
   PersistedWalkin,
+  PinnedTurn,
   TeamCycleSettings,
   TeamTurn,
   UndoEntry,
@@ -321,6 +322,9 @@ function WalkInApp({
   const [seq, setSeq] = useState(boot.seq);
   const [startingHead, setStartingHead] = useState(boot.startingHead);
   const [carryOver, setCarryOver] = useState<CarryOver | null>(boot.carryOver);
+  // «الدور من هنا» — تيم مثبَّت عليه الدور باليد (بيمشي زي ما هو، من غير ما
+  // يلمس ترتيب الدورة). بيتحفظ مع يوم الفرع وبيتشال أول ما التيم ده يخدم.
+  const [pinnedTurn, setPinnedTurn] = useState<PinnedTurn | null>(boot.pinnedTurn ?? null);
   const [lastResetAt, setLastResetAt] = useState<string | null>(boot.lastResetAt);
   const [clientLabel, setClientLabel] = useState('');
   const [visitType, setVisitType] = useState<BranchVisit>(() => defaultVisitFor(account));
@@ -431,6 +435,7 @@ function WalkInApp({
       seq,
       startingHead,
       carryOver,
+      pinnedTurn,
       lastResetAt,
       customHeads: heads,
       customManagers: managers,
@@ -447,6 +452,7 @@ function WalkInApp({
       seq,
       startingHead,
       carryOver,
+      pinnedTurn,
       lastResetAt,
       heads,
       managers,
@@ -497,6 +503,7 @@ function WalkInApp({
     setSeq(state.seq);
     setStartingHead(state.startingHead);
     setCarryOver(state.carryOver);
+    setPinnedTurn(state.pinnedTurn ?? null);
     setLastResetAt(state.lastResetAt);
     // The roster (Heads / managers / sales) is SHARED by both branches, so a
     // branch row only wins when its copy is at least as fresh as the shared
@@ -975,8 +982,8 @@ function WalkInApp({
 
   // ── Rotation ──
   const rotationOptions = useMemo(
-    () => ({ workspace: account, carryOver, cycle: cycleSettings }),
-    [account, carryOver, cycleSettings],
+    () => ({ workspace: account, carryOver, cycle: cycleSettings, pinnedTurn }),
+    [account, carryOver, cycleSettings, pinnedTurn],
   );
   const effectiveStartingHead = useMemo(() => {
     if (!isFixedTeamWorkspace && history.length === 0 && carryOver?.headId) {
@@ -1057,8 +1064,14 @@ function WalkInApp({
    * الدورة المحفوظة نفسها، فاللي على الشاشة هو اللي بيتنفّذ في «الرئيسية».
    */
   const teamRound = useMemo(
-    () => teamRoundFrom(activeManagers, nextTeam?.managerId, cycleSettings, activeSales),
-    [activeManagers, nextTeam, cycleSettings, activeSales],
+    () =>
+      teamRoundFrom(
+        activeManagers,
+        onTurnTeam?.id ?? nextTeam?.managerId,
+        cycleSettings,
+        activeSales,
+      ),
+    [activeManagers, onTurnTeam, nextTeam, cycleSettings, activeSales],
   );
 
   /** هل الترتيب الحالي مخصّص (اتعدّل بالأسهم) — بيظهر زرار الرجوع للتلقائي. */
@@ -1101,24 +1114,24 @@ function WalkInApp({
   };
 
   /**
-   * «الدور من هنا» — التيم المطلوب يبقى عليه الدور حالاً.
+   * «الدور من هنا» (▶) — التيم المختار يبقى عليه الدور دلوقتي، من غير أي تغيير
+   * في الترتيب: الدورة تفضل زي ما هي (تلقائية أو مخصّصة)، وبعد ما التيم ده
+   * يخدم بيكمّل التيم اللي بعده في نفس الدورة — لو دُست على هاني الشناوي يبقى
+   * بعده بيري ثم أحمد سلطان … زي الترتيب التلقائي بالظبط.
    *
-   * الترتيب اللي بيتحفظ هو نفس دورة المحرّك (بيتزامن مع الفرع التاني)، والتيم
-   * المختار بيتقدّم لأول الدورة بعد آخر تيم اتخدم — فالصفحة الرئيسية بتقول
-   * نفس اللي على شاشة الترتيب. ودور أمس المرحّل بيتشال لو كان لتيم تاني، لأن
-   * اختيار المستخدم صريح وأحدث من الترحيل.
+   * التثبيت بيتحفظ مع يوم الفرع (وبيتزامن زي الحضور)، وبيتشال أول ما التيم
+   * المثبَّت يخدم أو عند «بدء يوم جديد».
    */
-  const startTurnFrom = (team: ManagerTeam): void => {
-    const order = orderWithTurnAt(
-      activeManagers,
-      team.id,
-      lastServedManagerId,
-      cycleSettings,
-      activeSales,
-    );
-    if (!order) return;
-    if (carryOver?.managerId && carryOver.managerId !== team.id) setCarryOver(null);
-    updateCycleSettings({ mode: 'custom', order }, `الدور بقى على تيم ${team.name}`);
+  const pinTurn = (team: ManagerTeam): void => {
+    setPinnedTurn(turnPinFor(team, activeHeads));
+    toast('success', `الدور بقى على تيم ${team.name}`);
+  };
+
+  /** إلغاء التثبيت والرجوع لدور الدورة الطبيعي. */
+  const unpinTurn = (): void => {
+    if (!pinnedTurn) return;
+    setPinnedTurn(null);
+    toast('info', 'رجع الدور للترتيب الطبيعي');
   };
 
   /** الفرق الجاية اللي عليها الدور فعلاً (اللي لها سيلز متاح) — بنفس ترتيب الدورة. */
@@ -1710,6 +1723,7 @@ function WalkInApp({
         : { status: 'available', checkInOrder: null, checkInTime: null, walkCount: 0, coverCount: 0, lastServedAt: null },
       skippedIds: [],
       carryOver: carryOver ?? null,
+      pinnedTurn: pinnedTurn ?? null,
       seq,
       counter,
     };
@@ -1729,12 +1743,16 @@ function WalkInApp({
     };
     // دور أمس المرحَّل يُستهلك بمجرد خدمة التيم الخاص به.
     const carryAfter = carryOver && carryOver.managerId === mgr.id ? null : carryOver;
+    // «الدور من هنا» بيتشال أول ما التيم المثبَّت نفسه يخدم — وبعدها الدور
+    // بيكمّل طبيعي بالتيم اللي بعده في نفس الترتيب.
+    const pinAfter = pinnedTurn && pinnedTurn.managerId === mgr.id ? null : pinnedTurn;
     // «Next» is the team that follows the served one in the cycle, attendance aside.
     const nextAfter = successorTeam(activeManagers, mgr.id, cycleSettings, activeSales);
     setSeq(n);
     setHistory(newHistory);
     setSalesState(newSalesState);
     setCarryOver(carryAfter);
+    setPinnedTurn(pinAfter);
     setClientLabel('');
     setVisitType(defaultVisitFor(account));
     setAssignOpen(false);
@@ -1756,6 +1774,7 @@ function WalkInApp({
       setHistory(restoredHistory);
       setSalesState((prev) => reconcileCounts({ ...prev, [entry.personId]: entry.prevState }, restoredHistory));
       setCarryOver(entry.carryOver);
+      setPinnedTurn(entry.pinnedTurn ?? null);
       setSeq(entry.seq);
       setCounter(entry.counter);
       toast('info', `تم التراجع عن ${last.salesName} وعاد لنفس ترتيبه`);
@@ -1784,7 +1803,13 @@ function WalkInApp({
     if (!window.confirm('بدء يوم جديد؟ سيتم مسح الحضور والسجل وترحيل الدور المتبقي.')) return;
     // ترحيل دور التيم المتبقي: التيم اللي عليه الدور لم يُخدم بعد يبدأ اليوم الجديد،
     // وإلا يبدأ اليوم من التيم التالي لآخر تيم اتخدم في الدورة.
-    const pending = paused ? null : nextTeam;
+    // التيم المثبَّت اللي لسه ما خدمش بيبدأ اليوم الجديد، وإلا التيم اللي عليه
+    // الدور. التثبيت نفسه مقصود لليوم الحالي بس، فبيتشال مع بداية اليوم.
+    const pinnedPending =
+      pinnedTurn && !history.some((a) => a.managerId === pinnedTurn.managerId)
+        ? { managerId: pinnedTurn.managerId, managerName: pinnedTurn.managerName, headId: pinnedTurn.headId, headName: pinnedTurn.headName }
+        : null;
+    const pending = paused ? null : pinnedPending ?? nextTeam;
     const servedToday = carryOver?.managerId
       ? history.some((a) => a.managerId === carryOver.managerId)
       : false;
@@ -1795,6 +1820,7 @@ function WalkInApp({
     setCounter(0);
     setSeq(0);
     setClientLabel('');
+    setPinnedTurn(null);
     setUndoStack([]);
     setLastResetAt(new Date().toISOString());
     toast('success', 'تم بدء يوم جديد');
@@ -2007,6 +2033,16 @@ function WalkInApp({
                               <p className="truncate font-display text-[20px] font-black leading-tight text-ink-900">
                                 الدور على تيم {onTurnTeam.name}
                               </p>
+                              {turnPlan?.onTurnPinned && (
+                                <button
+                                  type="button"
+                                  onClick={unpinTurn}
+                                  title="إلغاء تثبيت الدور والرجوع للترتيب الطبيعي"
+                                  className="badge badge-amber mt-1"
+                                >
+                                  مثبَّت باليد — إلغاء
+                                </button>
+                              )}
                               <p className="mt-0.5 flex flex-wrap items-center gap-1.5">
                                 {onTurnHeadName && <span className="badge badge-red">{onTurnHeadName}</span>}
                                 <span className={cn('badge', nextTeam ? 'badge-green' : 'badge-gray')}>
@@ -2303,10 +2339,27 @@ function WalkInApp({
                     />
                   ) : (
                     <div className="space-y-2">
-                      <p className="mb-1 rounded-lg bg-ink-50 px-3 py-2 text-[11.5px] font-semibold text-ink-500">
-                        الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم عند الدور. الأسهم بتعدّل الترتيب
-                        الفعلي اللي بيمشي عليه الدور (وبيتزامن مع الفرع التاني)، فأول تيم هنا هو اللي في الرئيسية.
-                      </p>
+                      <div className="mb-1 rounded-lg bg-ink-50 px-3 py-2 text-[11.5px] font-semibold text-ink-500">
+                        <p>
+                          الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم عند الدور. الأسهم بتعدّل الترتيب
+                          الفعلي اللي بيمشي عليه الدور، وأول تيم هنا هو اللي في الرئيسية.
+                        </p>
+                        <p className="mt-1 flex flex-wrap items-center gap-1.5">
+                          <span>
+                            زرار ▶ بيثبّت الدور على التيم من غير ما يغيّر الترتيب — وبعد كده الدور بيكمّل
+                            بالتيم اللي بعده في نفس الترتيب.
+                          </span>
+                          {pinnedTurn && (
+                            <button
+                              type="button"
+                              onClick={unpinTurn}
+                              className="inline-flex items-center gap-1 rounded-md border border-ink-200 bg-white px-1.5 py-0.5 text-[10.5px] font-bold text-ink-500 transition hover:border-brand-300 hover:text-brand-600"
+                            >
+                              إلغاء التثبيت
+                            </button>
+                          )}
+                        </p>
+                      </div>
                       {teamRound.map((team, index) => {
                         const members = activeSales.filter((s) => s.managerId === team.id);
                         const membersAvailable = members.filter((s) => salesState[s.id]?.status === 'available').length;
@@ -2350,7 +2403,9 @@ function WalkInApp({
                                 <p className="mt-0.5 truncate text-[11px] font-semibold text-ink-400">
                                   {headName}
                                   {index === 0
-                                    ? ' · الدور الحالي'
+                                    ? pinnedTurn?.managerId === team.id
+                                      ? ' · الدور الحالي (مثبَّت)'
+                                      : ' · الدور الحالي'
                                     : team.id === lastServedManagerId
                                       ? ' · آخر تيم اتخدم'
                                       : ''}
@@ -2359,12 +2414,12 @@ function WalkInApp({
                                     : ` · متاح ${membersAvailable}/${members.length}`}
                                 </p>
                               </button>
-                              {isFixedTeamWorkspace && index > 0 && team.id !== lastServedManagerId && (
+                              {isFixedTeamWorkspace && team.id !== onTurnTeam?.id && (
                                 <button
                                   type="button"
-                                  onClick={() => startTurnFrom(team)}
-                                  title={`خلّي الدور دلوقتي على تيم ${team.name}`}
-                                  aria-label={`ابدأ الدور من تيم ${team.name}`}
+                                  onClick={() => pinTurn(team)}
+                                  title={`الدور من هنا — يبقى تيم ${team.name} عليه الدور حالاً، والترتيب يفضل زي ما هو`}
+                                  aria-label={`خلّي الدور على تيم ${team.name}`}
                                   className="grid size-8 shrink-0 place-items-center rounded-lg border border-ink-200 bg-white text-ink-400 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600"
                                 >
                                   <Play className="size-3.5" strokeWidth={2.4} />
