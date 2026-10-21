@@ -464,7 +464,6 @@ export interface RotationOptions {
 export interface UndoEntry {
   personId: string;
   prevState: SalesState;
-  manualOrder: string[];
   skippedIds: string[];
   carryOver: CarryOver | null;
   seq: number;
@@ -482,8 +481,6 @@ export interface PersistedWalkin {
   customHeads?: HeadGroup[];
   customManagers?: ManagerTeam[];
   customSales?: SalesPerson[];
-  /** Manual order override (list of sales IDs). */
-  manualOrder?: string[];
   /**
    * Team rotation settings («الترتيب» tab). Part of the branch snapshot so the
    * choice survives reloads and rides the normal cloud sync; the SHARED org
@@ -660,7 +657,6 @@ export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
     customHeads: heads,
     customManagers: managers,
     customSales: salesList,
-    manualOrder: Array.isArray(parsed.manualOrder) ? parsed.manualOrder.filter((id): id is string => typeof id === 'string') : undefined,
     skippedIds: Array.isArray(parsed.skippedIds) ? parsed.skippedIds.filter((id): id is string => typeof id === 'string') : [],
     undoStack: Array.isArray(parsed.undoStack) ? (parsed.undoStack as UndoEntry[]) : [],
     removedIds,
@@ -1388,35 +1384,60 @@ export function teamOrderFrom(
 
 /**
  * The list the «ترتيب المديرين» tab shows — the active cycle rotated so the team
- * on turn comes first, with the day's manual order (the arrows on that tab) on
- * top.
+ * on turn comes first.
  *
- * The manual order only ever applies to the AUTOMATIC cycle. Once a custom
- * order is chosen in «طريقة ترتيب الأدوار» it is the single source of truth for
- * both branches, so a manual order left over from an earlier day can never
- * display (or rotate) a different order than the one the manager picked — this
- * is what used to make a customized order look like it had no effect at all.
+ * This is the SAME order the rotation engine reads (`resolveCycle`), only
+ * rotated to the current turn. Nothing else may re-sort it: the arrows on that
+ * tab save their move INTO that cycle (see `swapInCustomOrder`), so the list on
+ * screen and the team the «الرئيسية» screen announces can never disagree.
  */
 export function teamRoundFrom(
   managersList: ManagerTeam[] = MANAGERS,
   startManagerId?: string | null,
   cycle?: TeamCycleSettings | null,
   salesList: SalesPerson[] = SALES,
-  manualOrder: string[] = [],
 ): ManagerTeam[] {
-  const natural = teamOrderFrom(managersList, startManagerId ?? undefined, cycle, salesList);
-  if (manualOrder.length === 0 || normalizeTeamCycle(cycle).mode === 'custom') return natural;
-  const rank = new Map(manualOrder.map((id, i) => [id, i] as const));
-  const known = natural
-    .filter((t) => rank.has(t.id))
-    .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
-  return [...known, ...natural.filter((t) => !rank.has(t.id))];
+  return teamOrderFrom(managersList, startManagerId ?? undefined, cycle, salesList);
 }
 
 /**
- * Swap two teams inside a CUSTOM order, keeping the rest of the saved order
- * untouched — what the arrows on «ترتيب المديرين» do while a custom cycle is
- * active, so the screen and the rotation engine can never disagree.
+ * The cycle order that puts `teamId` ON TURN right now — what «الدور من هنا»
+ * on «ترتيب المديرين» saves.
+ *
+ * The engine always continues AFTER the team that served last, so a turn can
+ * only be pulled to the front by moving it right behind that team: the order is
+ * the current cycle (rotated to the point the engine resumes from) with the
+ * chosen team moved to the top, and every other team keeps its relative place.
+ * Because the engine reads the same stored order, the tab and «الرئيسية» show
+ * the same team immediately.
+ *
+ * Returns `null` when the team is not in the cycle, or when it is the team that
+ * served last (a team can never succeed itself — that turn comes after a full
+ * round).
+ */
+export function orderWithTurnAt(
+  managersList: ManagerTeam[] = MANAGERS,
+  teamId: string,
+  lastServedManagerId?: string | null,
+  cycle?: TeamCycleSettings | null,
+  salesList: SalesPerson[] = SALES,
+): string[] | null {
+  const teams = resolveCycle(managersList, cycle, salesList).filter(
+    (team): team is ManagerTeam => Boolean(team),
+  );
+  if (!teams.some((team) => team.id === teamId)) return null;
+  if (lastServedManagerId && lastServedManagerId === teamId) return null;
+  const resumeAt = lastServedManagerId
+    ? successorTeam(managersList, lastServedManagerId, cycle, salesList)
+    : teams[0] ?? null;
+  const base = teamOrderFrom(managersList, resumeAt?.id, cycle, salesList).map((t) => t.id);
+  return [teamId, ...base.filter((id) => id !== teamId)];
+}
+
+/**
+ * Swap two teams inside an order, keeping the rest of it untouched — what the
+ * arrows on «ترتيب المديرين» save (the visible list becomes the custom cycle),
+ * so the screen and the rotation engine can never disagree.
  */
 export function swapInCustomOrder(
   order: string[],

@@ -16,6 +16,7 @@ import {
   defaultSalesState,
   loadPersisted,
   mirrorOrgChart,
+  orderWithTurnAt,
   predictFullRound,
   receiptText,
   savePersisted,
@@ -734,7 +735,6 @@ test('SITE and RESTA keep histories, carried turns, manual orders, and storage i
       customHeads: f.heads,
       customManagers: f.managers,
       customSales: f.sales,
-      manualOrder: ['site-manual-order'],
       skippedIds: [],
       undoStack: [],
     };
@@ -744,7 +744,6 @@ test('SITE and RESTA keep histories, carried turns, manual orders, and storage i
       counter: 7,
       seq: 7,
       carryOver: restaPending,
-      manualOrder: ['resta-manual-order'],
     };
     savePersisted(site, 'SITE');
     savePersisted(resta, 'RESTA');
@@ -755,8 +754,6 @@ test('SITE and RESTA keep histories, carried turns, manual orders, and storage i
     assert.equal(loadedResta.history[0].managerId, HALA);
     assert.equal(loadedSite.carryOver?.managerId, 'rewaida');
     assert.equal(loadedResta.carryOver?.managerId, DINA);
-    assert.deepEqual(loadedSite.manualOrder, ['site-manual-order']);
-    assert.deepEqual(loadedResta.manualOrder, ['resta-manual-order']);
 
     setActiveAccount('SITE');
     assert.equal(loadPersisted().carryOver?.managerId, 'rewaida');
@@ -968,32 +965,89 @@ test('a team claimed by two automatic slots rotates only once a round', () => {
 
 // ───────── The order tab and the engine read ONE order ─────────
 
-test('the order tab shows the custom cycle, and a stale manual order cannot win', () => {
+test('the order tab shows exactly the cycle the engine rotates with', () => {
   const f = fixture();
   const custom: TeamCycleSettings = { mode: 'custom', order: ['perry', DINA, 'ahmed'] };
-  // An old manual order left over from an earlier day (the arrows on the tab).
-  const stale = ['ahmed', 'rewaida', 'shehata', 'perry', SULTAN, HANY];
 
-  // Automatic cycle: the manual order still re-orders it, as before.
-  assert.deepEqual(
-    teamRoundFrom(f.managers, undefined, undefined, f.sales, stale).map((t) => t.id),
-    stale,
-  );
-  // Custom cycle: the order the manager picked is the ONLY order shown —
-  // this is the bug that made a customized order look like it had no effect.
-  assert.deepEqual(
-    teamRoundFrom(f.managers, undefined, custom, f.sales, stale).map((t) => t.id),
-    ['perry', DINA, 'ahmed'],
-  );
-  // …and it is still rotated so the team on turn comes first.
-  assert.deepEqual(
-    teamRoundFrom(f.managers, DINA, custom, f.sales, stale).map((t) => t.id),
-    [DINA, 'ahmed', 'perry'],
-  );
+  // The custom cycle is the ONLY order shown, and the ONLY order the engine
+  // reads — there is no second, per-device list that could contradict it (that
+  // is what used to show a team at #1 while «الرئيسية» announced another one).
   assert.deepEqual(
     teamRoundFrom(f.managers, undefined, custom, f.sales).map((t) => t.id),
     ['perry', DINA, 'ahmed'],
   );
+  // …and it is still rotated so the team on turn comes first.
+  assert.deepEqual(
+    teamRoundFrom(f.managers, DINA, custom, f.sales).map((t) => t.id),
+    [DINA, 'ahmed', 'perry'],
+  );
+  // Automatic cycle: the list is the built-in cycle (rotated at the turn).
+  const auto = teamRoundFrom(f.managers, undefined, undefined, f.sales).map((t) => t.id);
+  assert.deepEqual(
+    teamRoundFrom(f.managers, auto[0], undefined, f.sales).map((t) => t.id),
+    auto,
+  );
+  assert.deepEqual(
+    teamRoundFrom(f.managers, auto[2], undefined, f.sales).map((t) => t.id),
+    [...auto.slice(2), ...auto.slice(0, 2)],
+  );
+});
+
+test('moving a team on the order tab really moves the turn (engine and tab agree)', () => {
+  const f = fixture();
+  // The list the manager sees: Ahmed Yossry on turn, Shehata next, …
+  const shown = teamRoundFrom(f.managers, 'ahmed', undefined, f.sales).map((t) => t.id);
+  // Every arrow press on the tab stores the visible order as the cycle.
+  const moved = swapInCustomOrder(shown, shown[1], shown[2]);
+  const saved: TeamCycleSettings = { mode: 'custom', order: moved };
+
+  // The engine now continues in that order: the teams after the one on turn
+  // come in the sequence the manager arranged, so the tab cannot disagree.
+  assert.deepEqual(teamRoundFrom(f.managers, shown[0], saved, f.sales).map((t) => t.id), moved);
+
+  // Serving the team on turn hands the turn to the NEXT team of that order.
+  const plan = computeTurnPlan(f.state, [teamHistory(f, shown[0])], f.managers, f.sales, f.heads, {
+    workspace: 'RESTA',
+    cycle: saved,
+  });
+  assert.equal(plan.serving?.managerId, moved[1]);
+});
+
+test('«الدور من هنا» puts the chosen team on turn immediately', () => {
+  const f = fixture();
+  const served = teamHistory(f, 'ahmed');
+  const history = [served];
+
+  // Without it: the cycle continues after Ahmed Yossry → Shehata serves.
+  assert.equal(
+    plan(f, history).serving?.managerId,
+    'shehata',
+  );
+
+  // The manager taps the play button on Perry's team.
+  const order = orderWithTurnAt(f.managers, 'perry', served.managerId, undefined, f.sales)!;
+  const saved: TeamCycleSettings = { mode: 'custom', order };
+  assert.equal(order[0], 'perry');
+  assert.equal(plan(f, history, { cycle: saved }).serving?.managerId, 'perry');
+  // …and the list on the tab starts with that very team.
+  assert.equal(teamRoundFrom(f.managers, 'perry', saved, f.sales)[0].id, 'perry');
+  // Every other team keeps its place: only Perry jumped the queue.
+  assert.deepEqual(
+    order.filter((id) => id !== 'perry'),
+    teamOrderFrom(f.managers, 'shehata', undefined, f.sales).map((t) => t.id).filter((id) => id !== 'perry'),
+  );
+
+  // A team cannot succeed itself — the served team's turn comes after a round.
+  assert.equal(orderWithTurnAt(f.managers, 'ahmed', 'ahmed', undefined, f.sales), null);
+  // A team outside the cycle cannot be pulled in this way.
+  assert.equal(orderWithTurnAt(f.managers, GANNAH, 'ahmed', undefined, f.sales), null);
+});
+
+test('«الدور من هنا» also works on a fresh day (nothing served yet)', () => {
+  const f = fixture();
+  const order = orderWithTurnAt(f.managers, 'perry', null, undefined, f.sales)!;
+  const saved: TeamCycleSettings = { mode: 'custom', order };
+  assert.equal(plan(f, [], { cycle: saved }).serving?.managerId, 'perry');
 });
 
 test('moving a team on the order tab edits the saved custom order', () => {

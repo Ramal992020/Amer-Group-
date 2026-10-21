@@ -237,8 +237,26 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
   (`availableTeamMembers()` only orders the picker by fairness). Nothing in the
   engine may propose a sales name — `ComputedTurn.salesId` stays `''` for these
   workspaces and `computeNextTurn`/`predictFullRound` delegate to the team path.
-* The «الترتيب» tab renders `teamOrderFrom()` — managers, one row each, with
-  their roster and the arrow buttons that write to `manualOrder` (manager IDs).
+* The «الترتيب» tab renders `teamRoundFrom()` — managers, one row each, with
+  their roster and the arrow buttons. `teamRoundFrom()` is **exactly** the cycle
+  the engine rotates with (`teamOrderFrom`), only rotated so the team on turn is
+  #1: there is no second, per-device order any more. An arrow press saves the
+  visible order as the shared custom cycle (`swapInCustomOrder` →
+  `updateCycleSettings` → `OrgChart.cycle`), so what the tab shows at #1 and the
+  team «الرئيسية» announces are always the same team, and a re-order made on one
+  phone is what the other branch rotates with too. (Before this, the arrows wrote
+  a local, display-only `manualOrder`: the turn order looked changed while the
+  engine kept announcing a different team.) `resetOrder()` / «ترتيب تلقائي» puts
+  the cycle back to `auto`.
+* Two rows of that list are anchors, because moving them would change the TURN
+  instead of the order: #1 (the team on turn) and the team that served last
+  (the engine always resumes *after* it — `lastServedManagerId`). Their arrows
+  are disabled and `moveInOrder()` refuses those moves.
+* «الدور من هنا» (the small play button on a row) is the only way to change who
+  is on turn: `orderWithTurnAt()` saves the cycle with that team moved right
+  behind the last-served one, and a carried turn for another team is dropped —
+  the engine, the tab and «الرئيسية» then show that team immediately. The team
+  that served last cannot be chosen (`orderWithTurnAt` returns `null`).
 * The copy text is built by `receiptText()` (`src/lib/walkin.ts`), which
   `DoneReceipt` also displays:
   * normal visit: `Walk in (Site) Done ✅ / Sales : X Done✅ / Manager : … / Head : … / Next : …`
@@ -257,8 +275,9 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
 ## One roster for both branches — SITE ⇄ RESTA
 
 The org chart (Heads + manager teams + sales roster) is **shared by the two
-branches**, while attendance, history, carry-over and the manual order stay
-**per branch**. A manager/Head/sales added or renamed in SITE must therefore
+branches**, while attendance, history and carry-over stay **per branch**. The
+team order («الترتيب» arrows) is part of that shared chart as well (`cycle`), so
+both branches — and every device — rotate with the same order. A manager/Head/sales added or renamed in SITE must therefore
 show up in RESTA (and the other way round) without either branch losing a day:
 
 * The roster is published to its own row in the same table:

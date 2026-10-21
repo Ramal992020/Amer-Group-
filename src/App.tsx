@@ -35,7 +35,7 @@ import {
   successorTeam,
   canAdoptRemoteOrg,
   swapInCustomOrder,
-  teamOrderFrom,
+  orderWithTurnAt,
   teamRoundFrom,
   availableTeamMembers,
   usesFixedTeamRotation,
@@ -301,11 +301,6 @@ function WalkInApp({
   const [heads, setHeads] = useState<HeadGroup[]>(boot.customHeads || DEFAULT_HEADS);
   const [managers, setManagers] = useState<ManagerTeam[]>(boot.customManagers || DEFAULT_MANAGERS);
   const [sales, setSales] = useState<SalesPerson[]>(boot.customSales || DEFAULT_SALES);
-  // Manual team order (manager IDs) — the queue is ordered by managers now.
-  const [manualOrder, setManualOrder] = useState<string[]>(() => {
-    const ids = new Set((boot.customManagers || DEFAULT_MANAGERS).map((m) => m.id));
-    return (boot.manualOrder || []).filter((id) => ids.has(id));
-  });
 
   // Roster bookkeeping shared by SITE & RESTA: ids deleted by the user (so the
   // built-in defaults never resurrect them) and the revision of the shared
@@ -442,7 +437,6 @@ function WalkInApp({
       customSales: sales,
       removedIds,
       orgRevision: sharedOrgRev,
-      manualOrder,
       teamCycle: cycleSettings,
       undoStack,
     }),
@@ -459,7 +453,6 @@ function WalkInApp({
       sales,
       removedIds,
       sharedOrgRev,
-      manualOrder,
       cycleSettings,
       undoStack,
     ],
@@ -521,13 +514,6 @@ function WalkInApp({
       // The turn-order settings ride the same freshness guard as the roster,
       // so an older snapshot can never undo a newer cycle choice.
       setCycleSettings(normalizeTeamCycle(state.teamCycle));
-      // manualOrder (the per-branch manager drag-order) is closely tied to
-      // the roster and the cycle mode — an older snapshot that carries a
-      // stale manualOrder must never overwrite a newer local one, the same
-      // way a stale cycle choice is rejected above.  Without this guard a
-      // pull from another device could silently reset the custom order the
-      // user arranged on this phone.
-      if (Array.isArray(state.manualOrder)) setManualOrder(state.manualOrder);
       setOrgRevision(incomingOrgRev);
     } else if (state.customHeads) {
       dirtySeqRef.current += 1;
@@ -588,7 +574,6 @@ function WalkInApp({
         });
         return merged;
       });
-      setManualOrder((prev) => prev.filter((id) => next.managers.some((m) => m.id === id)));
       setOrgRevision(revision);
       mirrorOrgChart(account, chart, revision);
       toast('info', 'تم تحديث الهيكل من الفرع الآخر');
@@ -677,10 +662,10 @@ function WalkInApp({
   };
 
   /** حفظ طريقة ترتيب جديدة («الترتيب» tab) ونشرها للفرع الآخر مع الهيكل المشترك. */
-  const updateCycleSettings = (next: TeamCycleSettings): void => {
+  const updateCycleSettings = (next: TeamCycleSettings, message?: string): void => {
     setCycleSettings(normalizeTeamCycle(next));
     markOrgEdited();
-    toast('success', 'تم حفظ الدورة وتثبيتها');
+    toast('success', message ?? 'تم حفظ الدورة وتثبيتها');
   };
 
   /** Reconnect with exponential backoff after a transient failure. */
@@ -1067,67 +1052,79 @@ function WalkInApp({
   }, [nextTeam, activeSales, salesState]);
 
   /**
-   * ترتيب الفرق (بالمديرين) بدءاً من التيم اللي عليه الدور — حسب طريقة الترتيب
-   * المختارة في «طريقة ترتيب الأدوار» (الدورة التلقائية أو الدورة المخصّصة).
+   * القائمة المعروضة على الشاشة — **نفس** دورة المحرّك بالحرف، ملفوفة على التيم
+   * اللي عليه الدور. مفيش أي ترتيب تاني بيتطبّق فوقها: أسهم التبويب بتعدّل
+   * الدورة المحفوظة نفسها، فاللي على الشاشة هو اللي بيتنفّذ في «الرئيسية».
    */
-  const naturalTeamOrder = useMemo(
-    () => teamOrderFrom(activeManagers, nextTeam?.managerId, cycleSettings, activeSales),
+  const teamRound = useMemo(
+    () => teamRoundFrom(activeManagers, nextTeam?.managerId, cycleSettings, activeSales),
     [activeManagers, nextTeam, cycleSettings, activeSales],
   );
 
-  /**
-   * القائمة المعروضة على الشاشة: نفس دورة المحرّك تماماً، والترتيب اليدوي
-   * (أسهم التبويب) يُطبَّق فوق الدورة التلقائية فقط — لأن الدورة المخصّصة هي
-   * المرجع الوحيد لما اختاره المدير.
-   */
-  const teamRound = useMemo(
-    () => teamRoundFrom(activeManagers, nextTeam?.managerId, cycleSettings, activeSales, manualOrder),
-    [activeManagers, nextTeam, cycleSettings, activeSales, manualOrder],
-  );
+  /** هل الترتيب الحالي مخصّص (اتعدّل بالأسهم) — بيظهر زرار الرجوع للتلقائي. */
+  const orderCustomized = cycleSettings.mode === 'custom';
 
-  /** هل يوجد ترتيب يدوي فعّال فعلاً (يتجاهل أي أثر قديم بالاسم القديم للسيلز)? */
-  const manualOrderActive = useMemo(
-    () => teamRound.some((team, index) => team.id !== naturalTeamOrder[index]?.id),
-    [teamRound, naturalTeamOrder],
-  );
+  /** آخر تيم اتخدم فعلاً — المحرّك بيكمّل الدور اللي بعده. */
+  const lastServedManagerId = history.length > 0 ? history[history.length - 1].managerId : null;
+
+  /**
+   * التيم اللي اتخدم آخر مرة مايتحركش من مكانه: المحرّك بيكمّل الدور اللي
+   * *بعده*، فتحريكه (أو تحريك تيم لمكانه) بيغيّر مين عليه الدور فجأة بدل ما
+   * يغيّر الترتيب — المكانين دول بيتقفلوا والأسهم بتشتغل على الباقي.
+   */
+  const isServedAnchor = (teamId: string): boolean => teamId === lastServedManagerId;
 
   const moveInOrder = (fromIndex: number, dir: -1 | 1) => {
     const to = fromIndex + dir;
     if (to < 0 || to >= teamRound.length) return;
+    // المكان الأول محجوز للتيم اللي عليه الدور: تغييره بيحصل بـ«الدور من هنا»
+    // بس، عشان سحب تيم لمكانه (أو منها) يبان كأن الدور اتغيّر لوحده.
+    if (to === 0 || fromIndex === 0) return;
+    if (isServedAnchor(teamRound[fromIndex].id) || isServedAnchor(teamRound[to].id)) return;
     const moved = dir === -1 ? 'تم تقديم التيم في الترتيب' : 'تم تأخير التيم في الترتيب';
-    // دورة مخصّصة: التعديل يذهب لنفس ترتيب الدورة المحفوظ (ويُنشر للفرع الآخر)،
-    // فلا يختلف ما يظهر على الشاشة عمّا يشتغل به المحرّك.
-    if (cycleSettings.mode === 'custom') {
-      const next = swapInCustomOrder(
-        cycleSettings.order,
-        teamRound[fromIndex].id,
-        teamRound[to].id,
-      );
-      updateCycleSettings({ mode: 'custom', order: next });
-      toast('success', moved);
-      return;
-    }
-    const ids = teamRound.map((t) => t.id);
-    const [item] = ids.splice(fromIndex, 1);
-    ids.splice(to, 0, item);
-    setManualOrder(ids);
-    toast('success', moved);
-  };
-
-  const resetOrder = () => {
-    setManualOrder([]);
-    toast(
-      'info',
-      cycleSettings.mode === 'custom'
-        ? 'الترتيب المخصّص هو المعتمد — عدّله من «طريقة ترتيب الأدوار»'
-        : 'تمت العودة لترتيب الفرق التلقائي',
+    // الترتيب المعروض هو رأس الدورة الحالية. بنحفظ اللي اتغيّر كترتيب دورة
+    // (وطبعاً بيتنشر للفرع التاني مع الهيكل المشترك) عشان المحرّك يقرا نفس
+    // الترتيب — قبل كده كان بيتحفظ على الجهاز وبس وماكانش بيأثر على الدور
+    // أصلاً، فالصفحة الرئيسية كانت بتقول تيم تاني.
+    const next = swapInCustomOrder(
+      teamRound.map((t) => t.id),
+      teamRound[fromIndex].id,
+      teamRound[to].id,
     );
+    updateCycleSettings({ mode: 'custom', order: next }, moved);
   };
 
-  /** الفرق الجاية اللي عليها الدور فعلاً (اللي لها سيلز متاح). */
+  /** الرجوع لدورة الفرق التلقائية (بيلغي أي ترتيب مخصّص). */
+  const resetOrder = () => {
+    if (!orderCustomized) return;
+    updateCycleSettings({ mode: 'auto', order: [] }, 'تمت العودة لترتيب الفرق التلقائي');
+  };
+
+  /**
+   * «الدور من هنا» — التيم المطلوب يبقى عليه الدور حالاً.
+   *
+   * الترتيب اللي بيتحفظ هو نفس دورة المحرّك (بيتزامن مع الفرع التاني)، والتيم
+   * المختار بيتقدّم لأول الدورة بعد آخر تيم اتخدم — فالصفحة الرئيسية بتقول
+   * نفس اللي على شاشة الترتيب. ودور أمس المرحّل بيتشال لو كان لتيم تاني، لأن
+   * اختيار المستخدم صريح وأحدث من الترحيل.
+   */
+  const startTurnFrom = (team: ManagerTeam): void => {
+    const order = orderWithTurnAt(
+      activeManagers,
+      team.id,
+      lastServedManagerId,
+      cycleSettings,
+      activeSales,
+    );
+    if (!order) return;
+    if (carryOver?.managerId && carryOver.managerId !== team.id) setCarryOver(null);
+    updateCycleSettings({ mode: 'custom', order }, `الدور بقى على تيم ${team.name}`);
+  };
+
+  /** الفرق الجاية اللي عليها الدور فعلاً (اللي لها سيلز متاح) — بنفس ترتيب الدورة. */
   const upcomingTeams: UpcomingTeam[] = useMemo(() => {
     const nameOfHead = (headId: string) => activeHeads.find((h) => h.id === headId)?.name ?? headId;
-    return naturalTeamOrder
+    return teamRound
       .slice(1)
       .map((team) => ({
         managerId: team.id,
@@ -1137,7 +1134,7 @@ function WalkInApp({
       }))
       .filter((team) => team.available > 0)
       .slice(0, 4);
-  }, [naturalTeamOrder, salesState, activeSales, activeHeads]);
+  }, [teamRound, salesState, activeSales, activeHeads]);
 
   const availableForTurn = teamRoster.filter((m) => m.status === 'available').length;
 
@@ -1701,8 +1698,9 @@ function WalkInApp({
       shiftedTeams: shiftedTeams.map((t) => ({ ...t })),
     };
 
-    // Compact undo record: restores the person's state, the manual team order
-    // and yesterday's carried turn.
+    // Compact undo record: restores the person's state and yesterday's carried
+    // turn. The team order needs no copy — it is the shared cycle, and undo
+    // only moves `history`, which is what the engine reads the turn from.
     const entry: UndoEntry = {
       personId: salesId,
       prevState: salesState[salesId]
@@ -1710,7 +1708,6 @@ function WalkInApp({
           ? structuredClone(salesState[salesId])
           : (JSON.parse(JSON.stringify(salesState[salesId])) as SalesState)
         : { status: 'available', checkInOrder: null, checkInTime: null, walkCount: 0, coverCount: 0, lastServedAt: null },
-      manualOrder: [...manualOrder],
       skippedIds: [],
       carryOver: carryOver ?? null,
       seq,
@@ -1740,7 +1737,6 @@ function WalkInApp({
     setCarryOver(carryAfter);
     setClientLabel('');
     setVisitType(defaultVisitFor(account));
-    setManualOrder((prev) => (prev.length > 0 ? prev.filter((id) => id !== mgr.id) : prev));
     setAssignOpen(false);
     setDoneInfo({ assignment, next: nextAfter });
   };
@@ -1751,14 +1747,14 @@ function WalkInApp({
     if (!last) return;
 
     if (entry) {
-      // Full restore: the undone person returns to the exact queue position,
-      // together with the manual team order and yesterday's carried turn.
+      // Full restore: the undone person returns to the exact queue position —
+      // the engine reads the turn from `history`, so dropping the last
+      // assignment is enough to put their team back on turn.
       // Counters are reconciled from the restored history.
       const restoredHistory = history.slice(0, -1);
       setUndoStack((prev) => prev.slice(0, -1));
       setHistory(restoredHistory);
       setSalesState((prev) => reconcileCounts({ ...prev, [entry.personId]: entry.prevState }, restoredHistory));
-      setManualOrder(entry.manualOrder);
       setCarryOver(entry.carryOver);
       setSeq(entry.seq);
       setCounter(entry.counter);
@@ -1781,7 +1777,6 @@ function WalkInApp({
       return reconcileCounts(nextState, restoredHistory);
     });
     setSeq((v) => Math.max(0, v - 1));
-    setManualOrder((prev) => (prev.includes(last.managerId) ? prev : [last.managerId, ...prev]));
     toast('info', `تم التراجع عن ${last.salesName}`);
   };
 
@@ -1800,7 +1795,6 @@ function WalkInApp({
     setCounter(0);
     setSeq(0);
     setClientLabel('');
-    setManualOrder([]);
     setUndoStack([]);
     setLastResetAt(new Date().toISOString());
     toast('success', 'تم بدء يوم جديد');
@@ -2273,7 +2267,7 @@ function WalkInApp({
                     icon={<ListOrdered className="size-4.5" strokeWidth={2.1} />}
                     action={
                       <div className="flex items-center gap-1.5">
-                        {manualOrderActive && (
+                        {orderCustomized && (
                           <button
                             onClick={resetOrder}
                             title="العودة لترتيب الفرق التلقائي"
@@ -2310,7 +2304,8 @@ function WalkInApp({
                   ) : (
                     <div className="space-y-2">
                       <p className="mb-1 rounded-lg bg-ink-50 px-3 py-2 text-[11.5px] font-semibold text-ink-500">
-                        الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم عند الدور. يمكنك تعديل ترتيب الفرق بالأسهم.
+                        الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم عند الدور. الأسهم بتعدّل الترتيب
+                        الفعلي اللي بيمشي عليه الدور (وبيتزامن مع الفرع التاني)، فأول تيم هنا هو اللي في الرئيسية.
                       </p>
                       {teamRound.map((team, index) => {
                         const members = activeSales.filter((s) => s.managerId === team.id);
@@ -2354,17 +2349,36 @@ function WalkInApp({
                                 </p>
                                 <p className="mt-0.5 truncate text-[11px] font-semibold text-ink-400">
                                   {headName}
-                                  {index === 0 ? ' · الدور الحالي' : ''}
+                                  {index === 0
+                                    ? ' · الدور الحالي'
+                                    : team.id === lastServedManagerId
+                                      ? ' · آخر تيم اتخدم'
+                                      : ''}
                                   {membersAvailable === 0
                                     ? ' · لا يوجد متاح — يُتخطّى'
                                     : ` · متاح ${membersAvailable}/${members.length}`}
                                 </p>
                               </button>
+                              {isFixedTeamWorkspace && index > 0 && team.id !== lastServedManagerId && (
+                                <button
+                                  type="button"
+                                  onClick={() => startTurnFrom(team)}
+                                  title={`خلّي الدور دلوقتي على تيم ${team.name}`}
+                                  aria-label={`ابدأ الدور من تيم ${team.name}`}
+                                  className="grid size-8 shrink-0 place-items-center rounded-lg border border-ink-200 bg-white text-ink-400 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600"
+                                >
+                                  <Play className="size-3.5" strokeWidth={2.4} />
+                                </button>
+                              )}
                               <div className="flex shrink-0 flex-col">
                                 <button
                                   type="button"
                                   onClick={() => moveInOrder(index, -1)}
-                                  disabled={index <= 1}
+                                  disabled={
+                                    index <= 1 ||
+                                    team.id === lastServedManagerId ||
+                                    teamRound[index - 1]?.id === lastServedManagerId
+                                  }
                                   aria-label="تقديم التيم"
                                   className="grid size-7 place-items-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600 disabled:opacity-30"
                                 >
@@ -2373,7 +2387,12 @@ function WalkInApp({
                                 <button
                                   type="button"
                                   onClick={() => moveInOrder(index, 1)}
-                                  disabled={index >= teamRound.length - 1}
+                                  disabled={
+                                    index === 0 ||
+                                    index >= teamRound.length - 1 ||
+                                    team.id === lastServedManagerId ||
+                                    teamRound[index + 1]?.id === lastServedManagerId
+                                  }
                                   aria-label="تأخير التيم"
                                   className="grid size-7 place-items-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600 disabled:opacity-30"
                                 >
