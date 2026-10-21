@@ -26,6 +26,8 @@ import {
   Users,
   Loader2,
   ArrowLeftRight,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import {
   HEADS as DEFAULT_HEADS,
@@ -334,6 +336,20 @@ function WalkInApp({
   const [paused, setPaused] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneInfo | null>(null);
   const [tab, setTab] = useState<Tab>('dashboard');
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      return localStorage.getItem('amer-theme') === 'dark';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('amer-theme', darkMode ? 'dark' : 'light');
+    } catch {
+      // Storage may be unavailable in private browsing contexts.
+    }
+  }, [darkMode]);
   const [assignOpen, setAssignOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [booting, setBooting] = useState(true);
@@ -1859,7 +1875,13 @@ function WalkInApp({
   };
 
   return (
-    <div dir="rtl" className="min-h-screen bg-ink-50 font-body text-ink-900">
+    <div
+      dir="rtl"
+      className={cn(
+        'min-h-screen bg-ink-50 font-body text-ink-900 transition-colors duration-200',
+        darkMode && 'theme-dark',
+      )}
+    >
       <div className="mx-auto flex min-h-screen w-full max-w-[1400px]">
         {/* ══════════ Desktop sidebar ══════════ */}
         <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col border-l border-ink-100 bg-white lg:flex">
@@ -1951,6 +1973,16 @@ function WalkInApp({
               </div>
 
               <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDarkMode((value) => !value)}
+                  aria-label={darkMode ? 'تفعيل الوضع الفاتح' : 'تفعيل الوضع الليلي'}
+                  aria-pressed={darkMode}
+                  title={darkMode ? 'الوضع الفاتح' : 'الوضع الليلي'}
+                  className="theme-toggle grid size-9 shrink-0 place-items-center rounded-xl border border-ink-200 text-ink-500 transition hover:bg-ink-50"
+                >
+                  {darkMode ? <Sun className="size-4" /> : <Moon className="size-4" />}
+                </button>
                 <span className={cn('badge hidden sm:inline-flex', syncMeta.cls)} title={`الحساب: ${account}`}>
                   {syncMeta.icon}
                   {account}
@@ -1996,6 +2028,82 @@ function WalkInApp({
                     </div>
                   </div>
                 </section>
+
+                <nav aria-label="اختصارات سريعة" className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAssignOpen(true)}
+                    disabled={paused || !nextTeam}
+                    className="btn btn-neutral flex h-[68px] w-full flex-col gap-1.5 px-1 text-[11px] sm:h-auto sm:flex-row sm:px-3 sm:text-[13px]"
+                    title="اختيار السيلز وبدء مقابلة جديدة"
+                  >
+                    <UserCheck className="size-[18px] text-brand-600" />
+                    <span>إسناد عميل</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => go('today')}
+                    className="btn btn-neutral flex h-[68px] w-full flex-col gap-1.5 px-1 text-[11px] sm:h-auto sm:flex-row sm:px-3 sm:text-[13px]"
+                  >
+                    <CalendarCheck className="size-[18px] text-brand-600" />
+                    <span>تسجيل الحضور</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => go('log')}
+                    className="btn btn-neutral flex h-[68px] w-full flex-col gap-1.5 px-1 text-[11px] sm:h-auto sm:flex-row sm:px-3 sm:text-[13px]"
+                  >
+                    <FileText className="size-[18px] text-brand-600" />
+                    <span>السجل</span>
+                  </button>
+                </nav>
+
+                {/* اليوم في أرقام — مؤشرات مختصرة قبل تفاصيل الدور */}
+                {booting ? (
+                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                    {[0, 1, 2, 3].map((i) => (
+                      <SkeletonCard key={i} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="stagger grid grid-cols-2 gap-3 xl:grid-cols-4">
+                    <StatCard
+                      label="إجمالي اليوم"
+                      value={totalToday}
+                      hint="عميل تم توزيعه"
+                      accent="red"
+                      compact
+                      icon={<Zap className="size-5" strokeWidth={2.2} />}
+                    />
+                    <StatCard
+                      label="متاح الآن"
+                      value={availableCount}
+                      hint="جاهز لاستقبال عميل"
+                      accent="green"
+                      compact
+                      icon={<UserCheck className="size-5" strokeWidth={2.2} />}
+                      progress={activeSales.length ? (availableCount / activeSales.length) * 100 : 0}
+                    />
+                    <StatCard
+                      label="مشغول"
+                      value={busyList.length}
+                      hint="في مقابلة حالياً"
+                      accent="amber"
+                      compact
+                      icon={<PhoneCall className="size-5" strokeWidth={2.2} />}
+                      progress={activeSales.length ? (busyList.length / activeSales.length) * 100 : 0}
+                    />
+                    <StatCard
+                      label="لم يحضر"
+                      value={absentCount}
+                      hint={`من أصل ${activeSales.length} فرد`}
+                      accent="gray"
+                      compact
+                      icon={<Users className="size-5" strokeWidth={2.2} />}
+                      progress={activeSales.length ? (absentCount / activeSales.length) * 100 : 0}
+                    />
+                  </div>
+                )}
 
                 {/* current turn + quick actions */}
                 <div className="grid gap-4">
@@ -2138,48 +2246,6 @@ function WalkInApp({
                   <ClientExcelBuilder account={account} sales={activeSales} />
                 </div>
 
-                {/* stats moved to bottom */}
-                {booting ? (
-                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                    {[0, 1, 2, 3].map((i) => (
-                      <SkeletonCard key={i} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="stagger grid grid-cols-2 gap-3 xl:grid-cols-4">
-                    <StatCard
-                      label="إجمالي اليوم"
-                      value={totalToday}
-                      hint="عميل تم توزيعه"
-                      accent="red"
-                      icon={<Zap className="size-5" strokeWidth={2.2} />}
-                    />
-                    <StatCard
-                      label="متاح الآن"
-                      value={availableCount}
-                      hint="جاهز لاستقبال عميل"
-                      accent="green"
-                      icon={<UserCheck className="size-5" strokeWidth={2.2} />}
-                      progress={activeSales.length ? (availableCount / activeSales.length) * 100 : 0}
-                    />
-                    <StatCard
-                      label="مشغول"
-                      value={busyList.length}
-                      hint="في مقابلة حالياً"
-                      accent="amber"
-                      icon={<PhoneCall className="size-5" strokeWidth={2.2} />}
-                      progress={activeSales.length ? (busyList.length / activeSales.length) * 100 : 0}
-                    />
-                    <StatCard
-                      label="لم يحضر"
-                      value={absentCount}
-                      hint={`من أصل ${activeSales.length} فرد`}
-                      accent="gray"
-                      icon={<Users className="size-5" strokeWidth={2.2} />}
-                      progress={activeSales.length ? (absentCount / activeSales.length) * 100 : 0}
-                    />
-                  </div>
-                )}
               </div>
             )}
 

@@ -50,6 +50,7 @@ export function StatCard({
   icon,
   accent = 'red',
   progress,
+  compact = false,
 }: {
   label: string;
   value: number;
@@ -57,6 +58,7 @@ export function StatCard({
   icon: ReactNode;
   accent?: 'red' | 'green' | 'amber' | 'gray';
   progress?: number;
+  compact?: boolean;
 }) {
   const tones = {
     red: { chip: 'bg-brand-50 text-brand-600', bar: 'bg-brand-600' },
@@ -66,11 +68,11 @@ export function StatCard({
   }[accent];
 
   return (
-    <div className="surface surface-hover group relative overflow-hidden p-4">
+    <div className={cn('surface surface-hover group relative overflow-hidden', compact ? 'p-3 sm:p-4' : 'p-4')}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-[12px] font-bold text-ink-500">{label}</p>
-          <p className="mt-1.5 font-display text-[30px] font-black leading-none text-ink-900">
+          <p className={cn('font-display font-black leading-none text-ink-900', compact ? 'mt-1 text-[27px] sm:mt-1.5 sm:text-[30px]' : 'mt-1.5 text-[30px]')}>
             <Counter value={value} />
           </p>
           {hint && <p className="mt-1.5 truncate text-[11px] font-medium text-ink-400">{hint}</p>}
@@ -80,7 +82,7 @@ export function StatCard({
         </span>
       </div>
       {typeof progress === 'number' && (
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-ink-100">
+        <div className={cn('h-1.5 overflow-hidden rounded-full bg-ink-100', compact ? 'mt-2 sm:mt-3' : 'mt-3')}>
           <div
             className={cn('h-full rounded-full transition-all duration-700 ease-out', tones.bar)}
             style={{ width: `${Math.max(2, Math.min(100, progress))}%` }}
