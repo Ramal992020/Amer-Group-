@@ -403,3 +403,100 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+
+/* ─────────────── Persistable dark theme ─────────────── */
+.theme-dark {
+  color-scheme: dark;
+  --color-ink-900: #f3f4f6;
+  --color-ink-700: #d1d5dc;
+  --color-ink-500: #a7afbc;
+  --color-ink-400: #8992a1;
+  --color-ink-300: #6f7888;
+  --color-ink-200: #3b4351;
+  --color-ink-100: #2b313d;
+  --color-ink-50: #171b23;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 2px 8px -1px rgba(0, 0, 0, 0.28), 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 12px 28px -8px rgba(0, 0, 0, 0.42), 0 4px 10px -4px rgba(0, 0, 0, 0.25);
+}
+
+.theme-dark .bg-white,
+.theme-dark .bg-white\/90,
+.theme-dark .bg-white\/95 {
+  background-color: #202530;
+}
+.theme-dark .bg-white\/90 { background-color: rgb(32 37 48 / 0.92); }
+.theme-dark .bg-white\/95 { background-color: rgb(32 37 48 / 0.96); }
+.theme-dark .surface {
+  background: #202530;
+  border-color: #303744;
+}
+.theme-dark .surface-hover:hover { border-color: #444d5b; }
+.theme-dark .bg-ink-50\/70 { background-color: rgb(23 27 35 / 0.72); }
+.theme-dark .bg-brand-50 { background-color: #3b2028; }
+.theme-dark .bg-brand-600 { color: #fff; }
+.theme-dark .border-amber-200 { border-color: #6f5228; }
+.theme-dark .bg-amber-50,
+.theme-dark .bg-amber-50\/70,
+.theme-dark .bg-amber-50\/80 { background-color: #332b1d; }
+.theme-dark .text-amber-700 { color: #e8ba69; }
+.theme-dark .text-amber-600 { color: #f0bd5a; }
+.theme-dark .border-green-200 { border-color: #28563f; }
+.theme-dark .bg-green-50 { background-color: #1c3429; }
+.theme-dark .text-green-700 { color: #79d6a2; }
+.theme-dark .bg-red-50 { background-color: #392127; }
+.theme-dark .bg-emerald-50,
+.theme-dark .bg-emerald-50\/50,
+.theme-dark .bg-emerald-50\/70 { background-color: #1c3429; }
+.theme-dark .bg-amber-50\/60 { background-color: #332b1d; }
+.theme-dark .bg-amber-100,
+.theme-dark .bg-amber-100\/90,
+.theme-dark .bg-amber-200\/70 { background-color: #40331f; }
+.theme-dark .border-emerald-100,
+.theme-dark .border-emerald-200,
+.theme-dark .border-emerald-300,
+.theme-dark .border-orange-200,
+.theme-dark .border-red-100 { border-color: #3b4853; }
+.theme-dark .text-emerald-600,
+.theme-dark .text-emerald-700,
+.theme-dark .text-emerald-800 { color: #84d9a9; }
+.theme-dark .text-emerald-950 { color: #b3ecc8; }
+.theme-dark .text-amber-800,
+.theme-dark .text-amber-900 { color: #f0cc85; }
+.theme-dark .btn-secondary {
+  background: #2b2026;
+  color: #ff7880;
+  border-color: rgba(255, 105, 115, 0.4);
+}
+.theme-dark .btn-secondary:hover:not(:disabled) { background: #3a242b; }
+.theme-dark .btn-neutral {
+  background: #272d38;
+  color: #d1d5dc;
+  border-color: #414957;
+}
+.theme-dark .btn-neutral:hover:not(:disabled) { background: #333b48; }
+.theme-dark .btn-ghost { color: #a7afbc; }
+.theme-dark .btn-ghost:hover:not(:disabled) { background: #303744; color: #f3f4f6; }
+.theme-dark .btn-danger { background: #272d38; color: #ff858c; border-color: #61343a; }
+.theme-dark .field { background: #171b23; color: #f3f4f6; border-color: #414957; }
+.theme-dark .field::placeholder { color: #7c8594; }
+.theme-dark .field-label { color: #a7afbc; }
+.theme-dark .badge-red { background: #3a2027; color: #ff8d94; border-color: #64333b; }
+.theme-dark .badge-green { background: #1b3429; color: #83d7a9; border-color: #28563f; }
+.theme-dark .badge-amber { background: #382e1d; color: #f0c36e; border-color: #64502b; }
+.theme-dark .badge-gray { background: #2b313d; color: #bbc2cd; border-color: #414957; }
+.theme-dark .badge-blue { background: #1d2d45; color: #9fc2ff; border-color: #334b70; }
+.theme-dark .hero-mesh {
+  background:
+    radial-gradient(60% 70% at 92% 8%, rgba(227, 6, 19, 0.17) 0%, transparent 62%),
+    radial-gradient(50% 60% at 4% 96%, rgba(227, 6, 19, 0.1) 0%, transparent 60%);
+}
+.theme-dark .skeleton { background: #2b313d; }
+.theme-dark .skeleton::after { background-image: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent); }
+.theme-dark ::-webkit-scrollbar-thumb { background: #414957; background-clip: content-box; }
+.theme-dark ::selection { background: rgba(227, 6, 19, 0.35); color: #fff; }
+
+.theme-toggle { background-color: transparent; }
+.theme-dark .theme-toggle { border-color: #414957; color: #f3bd52; background-color: #272d38; }
+.theme-dark .theme-toggle:hover { background-color: #333b48; }
