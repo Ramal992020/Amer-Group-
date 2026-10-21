@@ -194,7 +194,7 @@ export function CycleSettingsPanel({ managers, heads, sales, settings, onChange 
         {modeCard(
           'auto',
           'الدورة التلقائية',
-          'الترتيب المدمج: Ahmed Yossry ← Youssef Shehata ← Rewaida ← Hany Elshenawy ← Perry ← التيم اللي فيه Hala Elfar ← التيم اللي فيه Gannah Elmalah. أي تيم جديد لا يدخل الدورة تلقائياً.',
+          'الترتيب المدمج: Ahmed Yossry ← Youssef Shehata ← Rewaida ← Hany Elshenawy ← Perry ← تيم أحمد سلطان (اللي فيه هالة الفار). أي تيم جديد لا يدخل الدورة تلقائياً.',
         )}
         {modeCard(
           'custom',

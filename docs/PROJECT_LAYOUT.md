@@ -40,6 +40,7 @@ grep -o "يظهر في الفرعين SITE و RESTA" dist/index.html # «إضا�
 grep -o "Shifted ❌" dist/index.html                  # receipt line for a passed-over team
 grep -o "كل تيم ليه شريط لون منفصل" dist/index.html  # colour-coded team cards
 grep -o "تم حفظ الدورة وتثبيتها" dist/index.html       # toast after saving the turn order
+grep -o "Perry ← Ahmed Sultan" dist/index.html        # six-team automatic cycle
 grep -o "الحضور المجمع" dist/index.html           # combined SITE+RESTA attendance file
 grep -c 'rest/v1/`' dist/index.html                 # must be 0 — the /rest/v1/ root
                                                     # check is what killed sync
@@ -215,6 +216,23 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
   source). The settings live on the **shared org chart** (`OrgChart.cycle`),
   so SITE and RESTA always rotate with the same order; the branch snapshots
   carry a copy as `PersistedWalkin.teamCycle` (read back by `hydrate`).
+* The automatic cycle is exactly six teams, in this order:
+  **Ahmed Yossry → Youssef Shehata → Rewaida → Hany Elshenawy → Perry →
+  Ahmed Sultan's team → back to Ahmed Yossry.** The last slot is ONE team under
+  two names: the team whose card reads «تيم Ahmed Sultan» (manager Ahmed Sultan,
+  head Mohamed Ramadan) and whose sales includes **Hala Elfar**. The slot carries
+  `aliases: ['Hala Elfar']`, so it resolves to that team whichever of the two
+  names the roster was saved under — team named Ahmed Sultan with Hala as a
+  member, or the older team named Hala with Sultan as a member.
+  `teamForAutomaticSlot()` scores every candidate team instead of taking the
+  first name match: own id (6) → own name held by a **member** (5) → own name on
+  the team (4) → alias id (3) → alias held by a member (2) → alias on the team
+  (1). So a leftover team that merely carries a name can never steal the slot
+  from the team the person is actually in, and a generated `custom-…` id can
+  never keep a team out of the cycle.
+* Gannah Elmalah's team left the rotation: it stays in the org chart
+  (attendance, history, phone numbers) but is never `Next` and never takes a
+  turn.
 * The sales who sits with the client is **chosen manually** from that team
   (`availableTeamMembers()` only orders the picker by fairness). Nothing in the
   engine may propose a sales name — `ComputedTurn.salesId` stays `''` for these

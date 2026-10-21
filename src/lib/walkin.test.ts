@@ -46,11 +46,13 @@ const HALA = 'custom-hala-913';
 const DINA = 'custom-dina-247';
 const HANY = 'custom-hany-512';
 const GANNAH = 'custom-gannah-388';
+const SULTAN = 'custom-sultan-641';
 // The requested automatic cycle:
 //   Ahmed Yossry → Youssef Shehata → Rewaida → Hany Elshenawy → Perry →
-//   Hala Elfar's team → Gannah Elmalah's team → back to Ahmed Yossry.
-// Dina Abdo stays in the org but is NOT part of the cycle any more.
-const CYCLE = ['ahmed', 'shehata', 'rewaida', HANY, 'perry', HALA, GANNAH];
+//   Ahmed Sultan's team → back to Ahmed Yossry.
+// Hala Elfar's team, Gannah Elmalah's team and Dina Abdo stay in the org but are
+// NOT part of the cycle any more.
+const CYCLE = ['ahmed', 'shehata', 'rewaida', HANY, 'perry', SULTAN];
 const WORKSPACES = ['RESTA', 'SITE'] as const;
 
 interface Fixture {
@@ -61,8 +63,9 @@ interface Fixture {
 }
 
 // Use saved/custom team IDs, shuffled org order and reverse attendance priority.
-// Perry, Tarek and Dina remain in the org to ensure the fixed cycle leaves
-// shared data alone (Dina is deliberately outside the configured cycle).
+// Perry, Tarek, Hala, Gannah and Dina remain in the org to ensure the fixed
+// cycle leaves shared data alone (Hala, Gannah and Dina are deliberately
+// outside the configured cycle).
 function fixture(membersPerTeam = 1): Fixture {
   const heads = structuredClone(HEADS);
   const managers: ManagerTeam[] = [
@@ -71,6 +74,7 @@ function fixture(membersPerTeam = 1): Fixture {
     { id: DINA, name: 'Dina Abdo', ar: 'دينا عبده', headId: 'mohamed-samir' },
     { id: HANY, name: 'Hany Elshenawy', ar: 'هاني الشناوي', headId: 'wael' },
     { id: GANNAH, name: 'Gannah Elmalah', ar: 'جنة الملا', headId: 'mohamed-samir' },
+    { id: SULTAN, name: 'Ahmed Sultan', ar: 'أحمد سلطان', headId: 'mohamed-samir' },
   ].reverse();
   const sales: SalesPerson[] = managers.flatMap((m) => [
     { id: `${m.id}-self`, name: m.name, managerId: m.id, headId: m.headId, isManager: true },
@@ -177,8 +181,7 @@ test('one shared team-order source defines the requested order', () => {
     { id: 'rewaida', name: 'Rewaida' },
     { id: 'hany-elshenawy', name: 'Hany Elshenawy' },
     { id: 'perry', name: 'Perry' },
-    { id: 'hala-elfar', name: 'Hala Elfar' },
-    { id: 'gannah-elmalah', name: 'Gannah Elmalah' },
+    { id: 'ahmed-sultan', name: 'Ahmed Sultan', aliases: ['Hala Elfar'] },
   ]);
 });
 
@@ -216,7 +219,7 @@ test('a team turn exposes the roster to pick from, not one chosen person — the
   }
 });
 
-test('RESTA and SITE repeat the seven-team cycle across actual assignments', () => {
+test('RESTA and SITE repeat the six-team cycle across actual assignments', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture(2);
     const history: Assignment[] = [];
@@ -242,7 +245,7 @@ test('the round is the team cycle: every available team once, in turn order', ()
   }
 });
 
-test('each team is followed by its fixed successor, including Gannah back to Ahmed', () => {
+test('each team is followed by its fixed successor, including Ahmed Sultan back to Ahmed', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     CYCLE.forEach((managerId, i) => {
@@ -256,19 +259,19 @@ test('each team is followed by its fixed successor, including Gannah back to Ahm
 
 test('the order list rotates the cycle so the current team is first, and keeps empty teams visible', () => {
   const f = fixture();
-  setTeamStatus(f, HALA, 'absent');
+  setTeamStatus(f, SULTAN, 'absent');
   assert.deepEqual(teamOrderFrom(f.managers, 'shehata', undefined, f.sales).map((t) => t.id), [
-    'shehata', 'rewaida', HANY, 'perry', HALA, GANNAH, 'ahmed',
+    'shehata', 'rewaida', HANY, 'perry', SULTAN, 'ahmed',
   ]);
   // Every cycle team appears exactly once, so the tab can show who is missing.
   assert.equal(teamOrderFrom(f.managers).length, CYCLE.length);
-  assert.equal(teamOrderFrom(f.managers).filter((t) => t.id === HALA).length, 1);
+  assert.equal(teamOrderFrom(f.managers).filter((t) => t.id === SULTAN).length, 1);
 });
 
 test('successorTeam continues the cycle and falls back to its start for unknown teams', () => {
   const f = fixture();
   assert.equal(successorTeam(f.managers, 'ahmed', undefined, f.sales)?.id, 'shehata');
-  assert.equal(successorTeam(f.managers, GANNAH, undefined, f.sales)?.id, 'ahmed');
+  assert.equal(successorTeam(f.managers, SULTAN, undefined, f.sales)?.id, 'ahmed');
   // Dina is in the org but outside the cycle, so the cycle simply starts.
   assert.equal(successorTeam(f.managers, DINA, undefined, f.sales)?.id, 'ahmed');
   assert.equal(successorTeam(f.managers, 'tarek-osman', undefined, f.sales)?.id, 'ahmed');
@@ -313,16 +316,16 @@ test('attendance counts and other teams check-in order cannot change fixed team 
 test('a present manager keeps his team eligible when every teammate is absent', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
-    // Everybody on Hala's team is absent EXCEPT Hala herself — she can still
-    // sit with the client, so her team's turn is not skipped.
-    f.sales.filter((s) => s.managerId === HALA && !s.isManager).forEach((s) => {
+    // Everybody on Sultan's team is absent EXCEPT Sultan himself — he can still
+    // sit with the client, so his team's turn is not skipped.
+    f.sales.filter((s) => s.managerId === SULTAN && !s.isManager).forEach((s) => {
       f.state[s.id].status = 'absent';
     });
-    assert.equal(f.state[`${HALA}-self`].status, 'available');
-    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, HALA);
+    assert.equal(f.state[`${SULTAN}-self`].status, 'available');
+    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, SULTAN);
     assert.deepEqual(
-      availableTeamMembers(HALA, f.state, f.sales).map((s) => s.id),
-      [`${HALA}-self`],
+      availableTeamMembers(SULTAN, f.state, f.sales).map((s) => s.id),
+      [`${SULTAN}-self`],
     );
     assert.deepEqual(round(f, undefined, { workspace }).map((t) => t.managerId), CYCLE);
   }
@@ -331,12 +334,12 @@ test('a present manager keeps his team eligible when every teammate is absent', 
 test('a team with the manager AND every teammate absent is skipped like any other empty team', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
-    setTeamStatus(f, HALA, 'absent');
-    assert.equal(f.state[`${HALA}-self`].status, 'absent');
-    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, GANNAH);
+    setTeamStatus(f, SULTAN, 'absent');
+    assert.equal(f.state[`${SULTAN}-self`].status, 'absent');
+    assert.equal(next(f, [teamHistory(f, 'perry')], { workspace })?.managerId, 'ahmed');
     assert.deepEqual(
       round(f, undefined, { workspace }).map((t) => t.managerId),
-      CYCLE.filter((id) => id !== HALA),
+      CYCLE.filter((id) => id !== SULTAN),
     );
   }
 });
@@ -346,10 +349,10 @@ test('a carried team keeps the first turn until it is served today', () => {
     const f = fixture(2);
     const pending = carry(f, 'rewaida');
     // Even after another team was served, yesterday's unserved team is first.
-    assert.equal(next(f, [teamHistory(f, HALA)], { workspace, carryOver: pending })?.managerId, 'rewaida');
+    assert.equal(next(f, [teamHistory(f, SULTAN)], { workspace, carryOver: pending })?.managerId, 'rewaida');
     // Once it is served today the cycle moves on from it.
     assert.equal(
-      next(f, [teamHistory(f, HALA), teamHistory(f, 'rewaida')], { workspace, carryOver: pending })?.managerId,
+      next(f, [teamHistory(f, SULTAN), teamHistory(f, 'rewaida')], { workspace, carryOver: pending })?.managerId,
       HANY,
     );
   }
@@ -371,23 +374,23 @@ test('the carried team exposes yesterday\'s person only when they are present', 
   }
 });
 
-test('a Rewaida carry-over continues through Hany, Perry, Hala and Gannah to Ahmed; a Gannah one wraps to Ahmed first', () => {
+test('a Rewaida carry-over continues through Hany, Perry and Sultan to Ahmed; a Sultan one wraps to Ahmed first', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     const rew = carry(f, 'rewaida');
     assert.deepEqual(
       round(f, undefined, { workspace, carryOver: rew }).map((t) => t.managerId),
-      ['rewaida', HANY, 'perry', HALA, GANNAH, 'ahmed', 'shehata'],
+      ['rewaida', HANY, 'perry', SULTAN, 'ahmed', 'shehata'],
     );
-    const gannah = carry(f, GANNAH);
+    const sultan = carry(f, SULTAN);
     assert.deepEqual(
-      round(f, undefined, { workspace, carryOver: gannah }).map((t) => t.managerId),
-      [GANNAH, 'ahmed', 'shehata', 'rewaida', HANY, 'perry', HALA],
+      round(f, undefined, { workspace, carryOver: sultan }).map((t) => t.managerId),
+      [SULTAN, 'ahmed', 'shehata', 'rewaida', HANY, 'perry'],
     );
   }
 });
 
-test('each of the seven carried teams starts the next day before its successor in both workspaces', () => {
+test('each of the six carried teams starts the next day before its successor in both workspaces', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
     CYCLE.forEach((managerId, i) => {
@@ -410,7 +413,7 @@ test('an absent carried team stays first while a teammate is available, and the 
     // The team keeps the slot; the person does not force the choice.
     assert.deepEqual(
       round(f, undefined, { workspace, carryOver: pending }).map((t) => t.managerId),
-      ['rewaida', HANY, 'perry', HALA, GANNAH, 'ahmed', 'shehata'],
+      ['rewaida', HANY, 'perry', SULTAN, 'ahmed', 'shehata'],
     );
     // The manager is present too, and sits ahead by earliest check-in.
     assert.deepEqual(
@@ -433,7 +436,7 @@ test('skipping the only teammate of the carried team keeps the team on turn beca
       ['rewaida-self'],
     );
     assert.deepEqual(round(f, undefined, options).map((t) => t.managerId), [
-      'rewaida', HANY, 'perry', HALA, GANNAH, 'ahmed', 'shehata',
+      'rewaida', HANY, 'perry', SULTAN, 'ahmed', 'shehata',
     ]);
   }
 });
@@ -445,7 +448,7 @@ test('skipping BOTH the only teammate and the manager truly moves the cycle on',
     const options = { workspace, carryOver: pending, skippedIds: ['rewaida-member-1', 'rewaida-self'] };
     assert.equal(next(f, [], options)?.managerId, HANY);
     assert.deepEqual(round(f, undefined, options).map((t) => t.managerId), [
-      HANY, 'perry', HALA, GANNAH, 'ahmed', 'shehata',
+      HANY, 'perry', SULTAN, 'ahmed', 'shehata',
     ]);
   }
 });
@@ -532,7 +535,9 @@ test('unavailable teams are skipped without changing the order of the remaining 
   }
 });
 
-test('only the seven configured teams participate; a missing custom team is safely skipped', () => {
+test('only the six configured teams participate; a missing custom team is safely skipped', () => {
+  // The last slot names two people of ONE team, so when Sultan's own card is
+  // gone the team is still found under Hala Elfar's name.
   for (const workspace of WORKSPACES) {
     const f = fixture();
     CYCLE.forEach((id) => setTeamStatus(f, id, 'absent'));
@@ -540,21 +545,64 @@ test('only the seven configured teams participate; a missing custom team is safe
     assert.deepEqual(round(f, undefined, { workspace }), []);
 
     const withMissing = fixture();
-    withMissing.managers = withMissing.managers.filter((m) => m.id !== HALA);
-    withMissing.sales = withMissing.sales.filter((s) => s.managerId !== HALA);
+    withMissing.managers = withMissing.managers.filter((m) => m.id !== SULTAN);
+    withMissing.sales = withMissing.sales.filter((s) => s.managerId !== SULTAN);
     assert.deepEqual(round(withMissing, undefined, { workspace }).map((t) => t.managerId), [
-      'ahmed', 'shehata', 'rewaida', HANY, 'perry', GANNAH,
+      'ahmed', 'shehata', 'rewaida', HANY, 'perry', HALA,
     ]);
   }
 });
 
-test('a removed last-served custom team still anchors the cycle by its saved name', () => {
+test('the live «تيم Ahmed Sultan» card — manager Ahmed Sultan, sales Hala Elfar — takes the last slot', () => {
+  const managers: ManagerTeam[] = [
+    ...structuredClone(MANAGERS),
+    { id: 'custom-sultan-641', name: 'Ahmed Sultan', ar: 'أحمد سلطان', headId: 'khaled' },
+    { id: HANY, name: 'Hany Elshenawy', ar: 'هاني الشناوي', headId: 'wael' },
+    // A leftover team that only CARRIES Hala's name: it must never take the slot.
+    { id: 'custom-hala-913', name: 'Hala Elfar', ar: 'هالة الفار', headId: 'wael' },
+  ];
+  const sales: SalesPerson[] = managers.flatMap((m) => [
+    { id: `${m.id}-self`, name: m.name, managerId: m.id, headId: m.headId, isManager: true },
+  ]);
+  // Hala is a SALES person inside Ahmed Sultan's team (the card in the app).
+  sales.push({ id: 'custom-hala-member', name: 'Hala Elfar', managerId: 'custom-sultan-641', headId: 'khaled' });
+
+  const order = teamOrderFrom(managers, undefined, undefined, sales);
+  assert.deepEqual(order.map((t) => t.id), [
+    'ahmed', 'shehata', 'rewaida', HANY, 'perry', 'custom-sultan-641',
+  ]);
+  // …and the empty namesake team is not in the rotation at all.
+  assert.ok(!order.some((t) => t.id === 'custom-hala-913'));
+  assert.equal(successorTeam(managers, 'perry', undefined, sales)?.id, 'custom-sultan-641');
+  assert.equal(successorTeam(managers, 'custom-sultan-641', undefined, sales)?.id, 'ahmed');
+});
+
+test('the last slot is ONE team under two names: Ahmed Sultan\'s team is Hala Elfar\'s team', () => {
+  // Saved under Hala's name (Sultan is only a member): the slot still resolves.
+  const f = fixture();
+  f.managers = f.managers.filter((m) => m.id !== SULTAN);
+  f.sales = f.sales.filter((s) => s.managerId !== SULTAN);
+  const order = teamOrderFrom(f.managers, undefined, undefined, f.sales);
+  assert.equal(order.length, 6);
+  assert.equal(order.at(-1)?.id, HALA);
+  assert.equal(successorTeam(f.managers, 'perry', undefined, f.sales)?.id, HALA);
+  assert.equal(successorTeam(f.managers, HALA, undefined, f.sales)?.id, 'ahmed');
+
+  // Saved under Sultan's name (Hala is only a member): the same slot resolves.
+  const g = fixture();
+  g.managers = g.managers.filter((m) => m.id !== HALA);
+  g.sales = g.sales.filter((s) => s.managerId !== HALA);
+  assert.equal(teamOrderFrom(g.managers, undefined, undefined, g.sales).at(-1)?.id, SULTAN);
+  assert.equal(successorTeam(g.managers, 'perry', undefined, g.sales)?.id, SULTAN);
+});
+
+test('a removed last-served custom team no longer anchors the cycle', () => {
   for (const workspace of WORKSPACES) {
     const f = fixture();
-    const previous = teamHistory(f, HALA);
-    f.managers = f.managers.filter((m) => m.id !== HALA);
-    f.sales = f.sales.filter((s) => s.managerId !== HALA);
-    assert.equal(next(f, [previous], { workspace })?.managerId, GANNAH);
+    const previous = teamHistory(f, SULTAN);
+    f.managers = f.managers.filter((m) => m.id !== SULTAN);
+    f.sales = f.sales.filter((s) => s.managerId !== SULTAN);
+    assert.equal(next(f, [previous], { workspace })?.managerId, 'ahmed');
   }
 });
 
@@ -581,7 +629,7 @@ test('custom team IDs and name variants resolve without relying on Heads', () =>
   for (const workspace of WORKSPACES) {
     const f = fixture();
     f.managers.forEach((m) => {
-      if (m.id === HALA) m.name = '  hALA  ELfar  ';
+      if (m.id === SULTAN) m.name = '  ahmed   SULTAN ';
       if (m.id === DINA) m.name = ' DINA   ABDO ';
       if (m.id === HANY) m.name = ' HANY-elshenawy ';
       if (m.id === GANNAH) m.name = '  gannah Elmalah ';
@@ -636,10 +684,10 @@ test('rotation and predictions never mutate attendance, history, carry-over, or 
 test('unspecified and unrelated workspaces retain their original Head × Head behavior', () => {
   const f = fixture();
   // The legacy person-level order (Khaled's side ⇄ the other Heads), which the
-  // team cycle does not touch: Hany (Wael) and Gannah (Mohamed Samir) simply
+  // team cycle does not touch: Hany (Wael) and Sultan (Mohamed Samir) simply
   // join the "other Heads" side here.
   const expected = [
-    'perry', HANY, 'rewaida', GANNAH, 'ahmed', HALA, DINA, 'shehata', 'tarek-osman',
+    'perry', HANY, 'rewaida', SULTAN, 'ahmed', HALA, GANNAH, 'shehata', DINA, 'tarek-osman',
   ];
   for (const workspace of [undefined, 'OTHER']) {
     const options = { workspace, carryOver: carry(f), skippedIds: ['perry-member-1'] };
@@ -853,16 +901,17 @@ function memberAnchoredFixture(sharedTeam = false): Fixture {
       ? []
       : [{ id: 'custom-team-19', name: 'Team Nineteen', ar: 'تيم تسعتاشر', headId: 'mohamed-samir' }]),
   ];
-  const gannahTeam = sharedTeam ? 'custom-team-77' : 'custom-team-19';
+  const sultanTeam = sharedTeam ? 'custom-team-77' : 'custom-team-19';
   const sales: SalesPerson[] = [
     { id: 'ahmed-self', name: 'Ahmed Yossry', managerId: 'ahmed', headId: 'khaled', isManager: true },
     // A manager row alone never makes a team eligible — Ahmed needs a member.
     { id: 'ahmed-member-1', name: 'Ahmed member 1', managerId: 'ahmed', headId: 'khaled' },
     { id: 'seven-lead', name: 'Seven Lead', managerId: 'custom-team-77', headId: 'wael', isManager: true },
-    // «التيم اللي فيه هالة الفار» — Hala is a member, not a team of her own.
-    { id: 'hala-elfar', name: 'Hala Elfar', managerId: 'custom-team-77', headId: 'wael' },
-    { id: 'nineteen-lead', name: 'Nineteen Lead', managerId: gannahTeam, headId: 'mohamed-samir', isManager: true },
-    { id: 'gannah-elmalah', name: 'Gannah Elmalah', managerId: gannahTeam, headId: 'mohamed-samir' },
+    // «التيم اللي فيه هاني الشناوي» — Hany is a member, not a team of his own.
+    { id: 'hany-elshenawy', name: 'Hany Elshenawy', managerId: 'custom-team-77', headId: 'wael' },
+    { id: 'nineteen-lead', name: 'Nineteen Lead', managerId: sultanTeam, headId: 'mohamed-samir', isManager: true },
+    // «التيم اللي فيه أحمد سلطان» — Sultan is a member too.
+    { id: 'ahmed-sultan', name: 'Ahmed Sultan', managerId: sultanTeam, headId: 'mohamed-samir' },
   ];
   const state = Object.fromEntries(sales.map((s, i) => [s.id, {
     status: 'available' as const,
@@ -895,7 +944,7 @@ test('a slot naming a person picks the team that person belongs to', () => {
   );
   // Moving the person moves the slot with them — nothing is bound to a team id.
   f.sales = f.sales.map((s) =>
-    s.id === 'hala-elfar' ? { ...s, managerId: 'custom-team-19' } : s,
+    s.id === 'hany-elshenawy' ? { ...s, managerId: 'custom-team-19' } : s,
   );
   assert.deepEqual(
     teamOrderFrom(f.managers, undefined, undefined, f.sales).map((t) => t.id),
@@ -923,7 +972,7 @@ test('the order tab shows the custom cycle, and a stale manual order cannot win'
   const f = fixture();
   const custom: TeamCycleSettings = { mode: 'custom', order: ['perry', DINA, 'ahmed'] };
   // An old manual order left over from an earlier day (the arrows on the tab).
-  const stale = ['ahmed', 'rewaida', 'shehata', 'perry', HALA, GANNAH, HANY];
+  const stale = ['ahmed', 'rewaida', 'shehata', 'perry', SULTAN, HANY];
 
   // Automatic cycle: the manual order still re-orders it, as before.
   assert.deepEqual(
@@ -1113,7 +1162,7 @@ test('the successor («Next») is the literal next team, whether or not it has a
   // successorTeam ignores attendance: the cycle order is what decides «Next».
   assert.equal(successorTeam(f.managers, 'ahmed', undefined, f.sales)?.id, 'shehata');
   assert.equal(successorTeam(f.managers, 'shehata', undefined, f.sales)?.id, 'rewaida');
-  assert.equal(successorTeam(f.managers, GANNAH, undefined, f.sales)?.id, 'ahmed');
+  assert.equal(successorTeam(f.managers, SULTAN, undefined, f.sales)?.id, 'ahmed');
 });
 
 // ───────────── Receipt copy («نسخ البيان») ─────────────
