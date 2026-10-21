@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Crown, Check, Copy, CheckCheck, PhoneCall, Search, MapPin, Download, Loader2, Clock3, Clock, Edit3, LayoutList, LayoutGrid } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson, SalesState } from '../lib/walkin';
 import { formatTime, hydrate, loadPersisted, otherWorkspace } from '../lib/walkin';
@@ -113,7 +113,28 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
   // gets a card here (the Excel file is filtered by the same helper).
   const attendanceSales = visibleAttendanceSales(sales);
   const [attendanceBranch, setAttendanceBranch] = useState<Branch>(currentBranch);
+  const otherBranch: Branch = currentBranch === 'SITE' ? 'RESTA' : 'SITE';
+  const [otherBranchSalesState, setOtherBranchSalesState] = useState<Record<string, SalesState>>({});
+  const [otherBranchRefresh, setOtherBranchRefresh] = useState(0);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [optimisticCheckIn, setOptimisticCheckIn] = useState<{ id: string; timeISO: string } | null>(null);
+
+  // Read the other branch's attendance so people registered there can be
+  // clearly marked instead of appearing absent in this branch's list.
+  useEffect(() => {
+    if (attendanceBranch !== otherBranch) return;
+    let active = true;
+    const cached = loadPersisted(otherBranch);
+    setOtherBranchSalesState(cached.salesState);
+    void pullRemote(otherBranch, cached, getSyncConfig(account)).then((remote) => {
+      if (!active || !remote || remote.updatedAt < (cached.updatedAt ?? 0)) return;
+      const latest = hydrate({ ...(remote.payload as Record<string, unknown>), updatedAt: remote.updatedAt });
+      setOtherBranchSalesState(latest.salesState);
+    });
+    return () => {
+      active = false;
+    };
+  }, [account, attendanceBranch, otherBranch, otherBranchRefresh]);
 
   // ─── طريقة العرض: طولي / عرضي (محفوظة على الجهاز) ───
   const [layout, setLayout] = useState<LayoutMode>(loadLayoutMode);
@@ -216,14 +237,33 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
   const confirmPrepare = async (): Promise<void> => {
     if (!preparingPerson || savingId) return;
+    const person = preparingPerson;
     const iso = timeStrToISO(prepareTimeStr);
-    setSavingId(preparingPerson.id);
+    setSavingId(person.id);
+
+    // For the branch currently on screen, close the dialog and show the check-in
+    // immediately while the guarded cross-device save continues in the background.
+    if (attendanceBranch === currentBranch) {
+      setOptimisticCheckIn({ id: person.id, timeISO: iso });
+      setPreparingPerson(null);
+      try {
+        await onToggle(person.id, attendanceBranch, iso);
+      } catch {
+        toast('error', 'تعذر حفظ وقت الحضور');
+      } finally {
+        setOptimisticCheckIn((current) => current?.id === person.id ? null : current);
+        setSavingId(null);
+      }
+      return;
+    }
+
     try {
-      await onToggle(preparingPerson.id, attendanceBranch, iso);
-      toast('success', `تم تحضير ${preparingPerson.name} بوقت ${formatTime(iso)} في فرع ${attendanceBranch}`);
+      await onToggle(person.id, attendanceBranch, iso);
+      toast('success', `تم تحضير ${person.name} بوقت ${formatTime(iso)} في فرع ${attendanceBranch}`);
       setPreparingPerson(null);
     } finally {
       setSavingId(null);
+      if (attendanceBranch !== currentBranch) setOtherBranchRefresh((value) => value + 1);
     }
   };
 
@@ -244,30 +284,44 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
   // كارت فرد واحد — يتنفس شكله حسب طريقة العرض المختارة (طولي / عرضي)
   const renderPersonCard = (person: SalesPerson) => {
-    const st = salesState[person.id];
-    const isPresent = st?.status !== 'absent';
+    const sourceState = salesState[person.id];
+    const selectedOtherBranch = attendanceBranch !== currentBranch;
+    const branchState = selectedOtherBranch ? otherBranchSalesState[person.id] : sourceState;
+    const pendingCheckIn = !selectedOtherBranch && optimisticCheckIn?.id === person.id ? optimisticCheckIn : null;
+    const st = pendingCheckIn
+      ? { ...sourceState, status: 'available' as const, checkInTime: pendingCheckIn.timeISO }
+      : branchState;
+    const isPresent = st?.status === 'available' || st?.status === 'busy';
     const busy = st?.status === 'busy';
+    const sourceIsBusy = sourceState?.status === 'busy';
+    const sourceIsPresent = sourceState?.status === 'available';
     const justCopied = copiedId === person.id;
     const saving = savingId === person.id;
-    const selectedOtherBranch = attendanceBranch !== currentBranch;
 
-    const subtitle = selectedOtherBranch
-      ? busy
-        ? `مشغول الآن في ${currentBranch} — لا يمكن نقله قبل إنهاء المقابلة`
-        : isPresent
-          ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} مع اختيار الوقت`
-          : `اضغط لتسجيله في فرع ${attendanceBranch} مع اختيار الوقت`
-      : busy
-        ? 'مشغول الآن مع عميل'
-        : isPresent
-          ? person.isManager
-            ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
-            : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
-          : 'لم يحضر — اضغط لاختيار وقت الحضور';
+    const subtitle = pendingCheckIn
+      ? 'جارٍ حفظ وقت الحضور…'
+      : selectedOtherBranch
+        ? sourceIsBusy
+          ? `مشغول الآن في ${currentBranch} — لا يمكن نقله قبل إنهاء المقابلة`
+          : busy
+            ? `مشغول الآن في ${attendanceBranch}`
+            : isPresent
+              ? `حاضر في ${attendanceBranch} — ${st?.checkInTime ? formatTime(st.checkInTime) : 'مسجل اليوم'}`
+              : sourceIsPresent
+                ? `حاضر في ${currentBranch} — اضغط لنقله إلى ${attendanceBranch} مع اختيار الوقت`
+                : `اضغط لتسجيله في فرع ${attendanceBranch} مع اختيار الوقت`
+        : busy
+          ? 'مشغول الآن مع عميل'
+          : isPresent
+            ? person.isManager
+              ? `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''} — يقدر يقعد مع العميل لو حد من تيمه مش موجود`
+              : `حضر ${st?.checkInTime ? formatTime(st.checkInTime) : ''}`
+            : 'لم يحضر — اضغط لاختيار وقت الحضور';
 
     const handleClick = () => {
       if (saving) return;
       if (selectedOtherBranch) {
+        if (isPresent) return; // هو مسجل بالفعل في الفرع المختار.
         // نقل لفرع آخر → يفتح الساعة أيضا
         openPrepare(person);
       } else if (busy) {
@@ -283,17 +337,33 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
 
     const cardTone = busy
       ? 'border-amber-200 bg-amber-50/70'
+      : selectedOtherBranch && isPresent
+        ? 'border-blue-200 bg-blue-50/70'
+        : isPresent
+          ? 'border-emerald-200 bg-emerald-50/50'
+          : 'border-ink-100 bg-white hover:border-ink-200';
+    const subtitleTone = busy
+      ? 'text-amber-700'
+      : selectedOtherBranch && isPresent
+        ? 'text-blue-700'
+        : isPresent
+          ? 'text-emerald-700'
+          : 'text-ink-400';
+
+    const statusActionLabel = selectedOtherBranch
+      ? isPresent
+        ? `مسجل حضور في فرع ${attendanceBranch}`
+        : `تحضير ${person.name} في فرع ${attendanceBranch} مع اختيار الوقت`
       : isPresent
-        ? 'border-emerald-200 bg-emerald-50/50'
-        : 'border-ink-100 bg-white hover:border-ink-200';
-    const subtitleTone = busy ? 'text-amber-700' : isPresent ? 'text-emerald-700' : 'text-ink-400';
+        ? `تسجيل انصراف ${person.name}`
+        : `تحضير ${person.name} مع اختيار الوقت`;
 
     const statusButton = (
       <button
         type="button"
-        disabled={saving}
+        disabled={saving || (selectedOtherBranch && isPresent)}
         onClick={handleClick}
-        aria-label={isPresent ? `تسجيل انصراف ${person.name}` : `تحضير ${person.name} مع اختيار الوقت`}
+        aria-label={statusActionLabel}
         className={cn(
           'grid size-10 shrink-0 place-items-center rounded-xl transition active:scale-95 disabled:cursor-wait disabled:opacity-60',
           busy ? 'bg-amber-500 text-white' : isPresent ? 'bg-emerald-500 text-white' : 'border border-ink-200 bg-ink-50 text-ink-300 hover:border-brand-300 hover:text-brand-500',
@@ -303,7 +373,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
       </button>
     );
 
-    const editButton = isPresent && (
+    const editButton = isPresent && !selectedOtherBranch && (
       <button
         type="button"
         disabled={saving}
@@ -316,7 +386,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
       </button>
     );
 
-    const copyButton = isPresent && (
+    const copyButton = isPresent && !selectedOtherBranch && (
       <button
         type="button"
         onClick={() => setCopyTarget(person)}
@@ -348,19 +418,20 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
         <div key={person.id} className={cn('flex flex-col gap-2 rounded-xl border px-3 py-3 transition-colors', cardTone)}>
           <div className="flex items-center gap-2.5">
             {statusButton}
-            <button type="button" disabled={saving} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
+            <button type="button" disabled={saving || (selectedOtherBranch && isPresent)} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
               <p className="flex flex-wrap items-center gap-1.5 text-[14px] font-extrabold text-ink-900">
                 <span className="min-w-0 whitespace-normal break-words">{person.name}</span>
                 {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
+                {selectedOtherBranch && isPresent && <span className="badge badge-blue shrink-0">{attendanceBranch}</span>}
               </p>
             </button>
           </div>
 
-          <button type="button" disabled={saving} onClick={handleClick} className="block text-right disabled:cursor-wait">
+          <button type="button" disabled={saving || (selectedOtherBranch && isPresent)} onClick={handleClick} className="block text-right disabled:cursor-wait">
             <p className={cn('tnum line-clamp-2 min-h-[2rem] text-[11px] font-semibold leading-snug', subtitleTone)}>{subtitle}</p>
           </button>
 
-          {isPresent && (
+          {isPresent && !selectedOtherBranch && (
             <div className="mt-auto flex items-center gap-1.5 border-t border-ink-100 pt-2">
               {editButton}
               {copyButton}
@@ -376,10 +447,11 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
       <div key={person.id} className={cn('flex items-center gap-2.5 rounded-xl border px-3 py-2.5 transition-colors', cardTone)}>
         {statusButton}
 
-        <button type="button" disabled={saving} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
+        <button type="button" disabled={saving || (selectedOtherBranch && isPresent)} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
           <p className="flex items-center gap-1.5 truncate text-[15px] font-extrabold text-ink-900">
             <span className="truncate">{person.name}</span>
             {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
+            {selectedOtherBranch && isPresent && <span className="badge badge-blue shrink-0">{attendanceBranch}</span>}
           </p>
           <p className={cn('tnum mt-0.5 truncate text-[12px] font-semibold', subtitleTone)}>{subtitle}</p>
         </button>

@@ -2003,26 +2003,26 @@ function WalkInApp({
             {tab === 'dashboard' && (
               <div className="space-y-5">
                 {/* welcome */}
-                <section className="surface anim-fade-up relative overflow-hidden p-5">
+                <section className="surface anim-fade-up relative overflow-hidden p-3 sm:p-4">
                   <div aria-hidden className="hero-mesh pointer-events-none absolute inset-0" />
                   <div
                     aria-hidden
-                    className="pointer-events-none absolute -left-10 -top-10 size-36 rounded-full border-[14px] border-brand-600/[0.06]"
+                    className="pointer-events-none absolute -left-8 -top-8 size-24 rounded-full border-[8px] border-brand-600/[0.06]"
                   />
-                  <div className="relative flex flex-wrap items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <span className="badge badge-red mb-2">
+                  <div className="relative flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <span className="badge badge-red mb-1 px-2 py-0.5">
                         <Activity className="size-3" />
                         {account}
                       </span>
-                      <h2 className="font-display text-[22px] font-black leading-tight text-ink-900 sm:text-[26px]">
+                      <h2 className="font-display text-[16px] font-black leading-snug text-ink-900 sm:text-[20px]">
                         أهلاً بك في منظّم الـ Walk-In
                       </h2>
-                      <p className="mt-1 text-[12.5px] font-semibold text-ink-400">{today}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold text-ink-400">{today}</p>
                     </div>
-                    <div className="rounded-2xl border border-ink-100 bg-white px-4 py-3 text-center">
-                      <p className="text-[11px] font-bold text-ink-400">العميل القادم رقم</p>
-                      <p className="tnum font-display text-[30px] font-black leading-none text-brand-600">
+                    <div className="min-w-[82px] shrink-0 rounded-xl border border-ink-100 bg-white px-2.5 py-2 text-center">
+                      <p className="text-[9px] font-bold leading-tight text-ink-400">العميل القادم</p>
+                      <p className="tnum font-display text-[22px] font-black leading-none text-brand-600">
                         #{totalToday + 1}
                       </p>
                     </div>
