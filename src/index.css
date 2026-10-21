@@ -449,6 +449,9 @@ body {
 .theme-dark .bg-emerald-50,
 .theme-dark .bg-emerald-50\/50,
 .theme-dark .bg-emerald-50\/70 { background-color: #1c3429; }
+.theme-dark .bg-blue-50\/70 { background-color: #1d2d45; }
+.theme-dark .border-blue-200 { border-color: #334b70; }
+.theme-dark .text-blue-700 { color: #9fc2ff; }
 .theme-dark .bg-amber-50\/60 { background-color: #332b1d; }
 .theme-dark .bg-amber-100,
 .theme-dark .bg-amber-100\/90,
