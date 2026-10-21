@@ -349,8 +349,8 @@ export function AttendanceBoard({ account, salesState, onToggle, onFree, onUpdat
           <div className="flex items-center gap-2.5">
             {statusButton}
             <button type="button" disabled={saving} onClick={handleClick} className="min-w-0 flex-1 text-right disabled:cursor-wait">
-              <p className="flex items-center gap-1.5 text-[14px] font-extrabold text-ink-900">
-                <span className="truncate">{person.name}</span>
+              <p className="flex flex-wrap items-center gap-1.5 text-[14px] font-extrabold text-ink-900">
+                <span className="min-w-0 whitespace-normal break-words">{person.name}</span>
                 {person.isManager && <span className="badge badge-red shrink-0">مدير</span>}
               </p>
             </button>
