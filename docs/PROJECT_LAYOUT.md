@@ -337,12 +337,17 @@ SITE and RESTA keep separate days (attendance, history, carry-over) on separate
 cloud rows, so switching branch is not a re-login: it remounts the app on the
 other workspace and pulls that row.
 
-* Dashboard quick actions are a 2×2 grid on mobile / four across on desktop:
-  **إسناد عميل · تسجيل الحضور · السجل · تبديل الفرع** — the fourth card names
-  the branch it opens (`SITE` / `RESTA`) and calls `switchBranchNow()`, which
-  asks for confirmation, pushes any unsent edit first (`flushPush`), then calls
-  `onSwitchBranch` in `App` (`saveWorkspace` + `setWorkspace`, so
-  `<WalkInApp key={workspace}>` remounts on the other branch).
+* Dashboard quick actions are three cards — **تبديل الفرع · تسجيل الحضور ·
+  السجل** — «إسناد عميل» is **not** one of them any more (the client is assigned
+  from «الدور الحالي» / the bottom bar عيّن عميل). The first card is two red
+  arrows (`ArrowLeftRight`, `text-brand-600`) with «تبديل الفرع» underneath,
+  plus the branch it opens (`SITE` / `RESTA`) in small type.
+* `switchBranchNow()` has **no confirmation dialog**: one tap switches. It only
+  fires an unsent-edit upload in the background (`flushPush`, not awaited) and
+  then calls `onSwitchBranch` in `App` (`saveWorkspace` + `setWorkspace`, so
+  `<WalkInApp key={workspace}>` remounts on the other branch). Nothing can be
+  lost by the switch: each branch's board is already persisted in its own
+  bucket, with its own revision, before the remount.
 * The account badge in the header is the same button (always visible, not only
   on `sm+`), so the switch is also reachable from any tab without opening the
   drawer.

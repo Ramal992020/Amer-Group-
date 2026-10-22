@@ -2060,13 +2060,11 @@ function WalkInApp({
    * Switch branch from the dashboard/menu. Any unsent edit is pushed first, so
    * nothing made here is lost when the app remounts on the other workspace.
    */
-  const switchBranchNow = async (): Promise<void> => {
-    const label = siblingBranch === 'SITE' ? 'الموقع' : 'ريستا';
-    const ok = window.confirm(
-      `تبديل الفرع إلى ${label} (${siblingBranch})؟\n\nحضور وسجل ودور كل فرع منفصلين ومحفوظين — الرجوع لأي فرع في أي وقت بالبيانات زي ما هي.`,
-    );
-    if (!ok) return;
-    if (syncReadyRef.current && isDirty()) await flushPushRef.current();
+  const switchBranchNow = (): void => {
+    // One tap = switch. No dialog: every edit is already saved in this
+    // branch's own bucket (and its revision), and both branches keep separate
+    // days, so nothing can be lost by looking at the other one.
+    if (syncReadyRef.current && isDirty()) void flushPushRef.current();
     onSwitchBranch();
   };
 
@@ -2240,7 +2238,7 @@ function WalkInApp({
                 </button>
                 <button
                   type="button"
-                  onClick={() => void switchBranchNow()}
+                  onClick={switchBranchNow}
                   title={`الفرع الحالي: ${account} — اضغط للتبديل إلى ${siblingBranch}`}
                   aria-label={`تبديل الفرع إلى ${siblingBranch}`}
                   className={cn('badge inline-flex shrink-0 transition active:scale-95', syncMeta.cls)}
@@ -2291,16 +2289,22 @@ function WalkInApp({
                   </div>
                 </section>
 
-                <nav aria-label="اختصارات سريعة" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <nav aria-label="اختصارات سريعة" className="grid grid-cols-3 gap-2">
+                  {/* «تبديل الفرع» — سهمين أحمر، والاسم تحته. الضغط بيبدّل فوراً. */}
                   <button
                     type="button"
-                    onClick={() => setAssignOpen(true)}
-                    disabled={paused || !nextTeam}
+                    onClick={switchBranchNow}
                     className="btn btn-neutral flex h-[68px] w-full flex-col gap-1.5 px-1 text-[11px] sm:h-auto sm:flex-row sm:px-3 sm:text-[13px]"
-                    title="اختيار السيلز وبدء مقابلة جديدة"
+                    title={`تبديل الفرع إلى ${siblingBranch} — بدون تأكيد`}
+                    aria-label={`تبديل الفرع إلى ${siblingBranch}`}
                   >
-                    <UserCheck className="size-[18px] text-brand-600" />
-                    <span>إسناد عميل</span>
+                    <ArrowLeftRight className="size-[19px] shrink-0 text-brand-600" strokeWidth={2.4} />
+                    <span className="flex flex-col items-center leading-tight sm:flex-row sm:gap-1">
+                      تبديل الفرع
+                      <span dir="ltr" className="text-[9.5px] font-black text-ink-400 sm:text-[10px]">
+                        {siblingBranch}
+                      </span>
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -2317,21 +2321,6 @@ function WalkInApp({
                   >
                     <FileText className="size-[18px] text-brand-600" />
                     <span>السجل</span>
-                  </button>
-                  {/* «تبديل الفرع» — SITE ⇄ RESTA في لمسة واحدة، جنب إسناد عميل */}
-                  <button
-                    type="button"
-                    onClick={() => void switchBranchNow()}
-                    className="btn btn-neutral flex h-[68px] w-full flex-col gap-1.5 px-1 text-[11px] sm:h-auto sm:flex-row sm:px-3 sm:text-[13px]"
-                    title={`تبديل الفرع إلى ${siblingBranch}`}
-                  >
-                    <ArrowLeftRight className="size-[18px] text-brand-600" />
-                    <span className="flex flex-col items-center leading-tight sm:flex-row sm:gap-1">
-                      تبديل الفرع
-                      <span dir="ltr" className="text-[9.5px] font-black text-ink-400 sm:text-[10px]">
-                        {siblingBranch}
-                      </span>
-                    </span>
                   </button>
                 </nav>
 
