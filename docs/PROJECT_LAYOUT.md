@@ -331,6 +331,24 @@ show up in RESTA (and the other way round) without either branch losing a day:
   `mergeOrgCharts` unions the two rosters so a member that only exists in one
   of them is not dropped.
 
+## «تبديل الفرع» — one tap, from the dashboard
+
+SITE and RESTA keep separate days (attendance, history, carry-over) on separate
+cloud rows, so switching branch is not a re-login: it remounts the app on the
+other workspace and pulls that row.
+
+* Dashboard quick actions are a 2×2 grid on mobile / four across on desktop:
+  **إسناد عميل · تسجيل الحضور · السجل · تبديل الفرع** — the fourth card names
+  the branch it opens (`SITE` / `RESTA`) and calls `switchBranchNow()`, which
+  asks for confirmation, pushes any unsent edit first (`flushPush`), then calls
+  `onSwitchBranch` in `App` (`saveWorkspace` + `setWorkspace`, so
+  `<WalkInApp key={workspace}>` remounts on the other branch).
+* The account badge in the header is the same button (always visible, not only
+  on `sm+`), so the switch is also reachable from any tab without opening the
+  drawer.
+* The drawer keeps the full workspace chooser (`onSwitchWorkspace`) next to
+  «يوم جديد» / خروج.
+
 ## «الهيكل» tab order
 
 Top → bottom, and it is deliberate:

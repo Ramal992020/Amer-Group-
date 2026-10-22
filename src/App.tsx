@@ -255,6 +255,20 @@ export default function App() {
     );
   }
 
+  /**
+   * «تبديل الفرع» — flip SITE ⇄ RESTA in one tap.
+   *
+   * Both branches keep their own local bucket and their own cloud row, so the
+   * switch is instant: the app remounts on the other workspace and pulls it.
+   * (The full chooser — `onSwitchWorkspace` — stays available in the drawer.)
+   */
+  const switchBranch = () => {
+    if (!user) return;
+    const next: Workspace = workspace === 'SITE' ? 'RESTA' : 'SITE';
+    saveWorkspace(user.id, next);
+    setWorkspace(next);
+  };
+
   // 4) الدخول للتطبيق — جلسة Supabase ناجحة + مساحة عمل محددة.
   return (
     <ToastProvider>
@@ -264,6 +278,7 @@ export default function App() {
         profile={profile}
         onLogout={() => void signOutFromSupabase()}
         onSwitchWorkspace={() => setSwitching(true)}
+        onSwitchBranch={switchBranch}
       />
     </ToastProvider>
   );
@@ -290,11 +305,15 @@ function WalkInApp({
   profile,
   onLogout,
   onSwitchWorkspace,
+  onSwitchBranch,
 }: {
   account: string;
   profile: GoogleProfile;
   onLogout: () => void;
+  /** Full workspace chooser (the drawer keeps it). */
   onSwitchWorkspace: () => void;
+  /** One-tap SITE ⇄ RESTA switch — the sibling branch of this account. */
+  onSwitchBranch: () => void;
 }) {
   const toast = useToast();
   const isFixedTeamWorkspace = usesFixedTeamRotation(account);
@@ -2034,6 +2053,23 @@ function WalkInApp({
     toast('info', `تم التراجع عن ${last.salesName}`);
   };
 
+  /** The other branch (SITE ⇄ RESTA) — what «تبديل الفرع» opens. */
+  const siblingBranch = account.trim().toUpperCase() === 'RESTA' ? 'SITE' : 'RESTA';
+
+  /**
+   * Switch branch from the dashboard/menu. Any unsent edit is pushed first, so
+   * nothing made here is lost when the app remounts on the other workspace.
+   */
+  const switchBranchNow = async (): Promise<void> => {
+    const label = siblingBranch === 'SITE' ? 'الموقع' : 'ريستا';
+    const ok = window.confirm(
+      `تبديل الفرع إلى ${label} (${siblingBranch})؟\n\nحضور وسجل ودور كل فرع منفصلين ومحفوظين — الرجوع لأي فرع في أي وقت بالبيانات زي ما هي.`,
+    );
+    if (!ok) return;
+    if (syncReadyRef.current && isDirty()) await flushPushRef.current();
+    onSwitchBranch();
+  };
+
   const resetDay = () => {
     if (!window.confirm('بدء يوم جديد؟ سيتم مسح الحضور والسجل وترحيل الدور المتبقي.')) return;
     // ترحيل دور التيم المتبقي: التيم اللي عليه الدور لم يُخدم بعد يبدأ اليوم الجديد،
@@ -2202,10 +2238,17 @@ function WalkInApp({
                 >
                   {darkMode ? <Sun className="size-4" /> : <Moon className="size-4" />}
                 </button>
-                <span className={cn('badge hidden sm:inline-flex', syncMeta.cls)} title={`الحساب: ${account}`}>
+                <button
+                  type="button"
+                  onClick={() => void switchBranchNow()}
+                  title={`الفرع الحالي: ${account} — اضغط للتبديل إلى ${siblingBranch}`}
+                  aria-label={`تبديل الفرع إلى ${siblingBranch}`}
+                  className={cn('badge inline-flex shrink-0 transition active:scale-95', syncMeta.cls)}
+                >
                   {syncMeta.icon}
                   {account}
-                </span>
+                  <ArrowLeftRight className="size-3 opacity-70" />
+                </button>
                 <span className="badge badge-red tnum">
                   <UserCheck className="size-3" />
                   {presentCount} حاضر
@@ -2248,7 +2291,7 @@ function WalkInApp({
                   </div>
                 </section>
 
-                <nav aria-label="اختصارات سريعة" className="grid grid-cols-3 gap-2">
+                <nav aria-label="اختصارات سريعة" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   <button
                     type="button"
                     onClick={() => setAssignOpen(true)}
@@ -2274,6 +2317,21 @@ function WalkInApp({
                   >
                     <FileText className="size-[18px] text-brand-600" />
                     <span>السجل</span>
+                  </button>
+                  {/* «تبديل الفرع» — SITE ⇄ RESTA في لمسة واحدة، جنب إسناد عميل */}
+                  <button
+                    type="button"
+                    onClick={() => void switchBranchNow()}
+                    className="btn btn-neutral flex h-[68px] w-full flex-col gap-1.5 px-1 text-[11px] sm:h-auto sm:flex-row sm:px-3 sm:text-[13px]"
+                    title={`تبديل الفرع إلى ${siblingBranch}`}
+                  >
+                    <ArrowLeftRight className="size-[18px] text-brand-600" />
+                    <span className="flex flex-col items-center leading-tight sm:flex-row sm:gap-1">
+                      تبديل الفرع
+                      <span dir="ltr" className="text-[9.5px] font-black text-ink-400 sm:text-[10px]">
+                        {siblingBranch}
+                      </span>
+                    </span>
                   </button>
                 </nav>
 
