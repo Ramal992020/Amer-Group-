@@ -14,7 +14,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decideSync, nextLocalRevision, pendingStampOf } from './syncRevision.ts';
+import { decideSync, nextLocalRevision, pendingStampOf, referenceStamp } from './syncRevision.ts';
 
 interface Row {
   payload: { board: string[] };
@@ -178,4 +178,27 @@ test('edit stamps are strictly increasing on the server clock', () => {
 test('only an unsent edit is saved with a pending stamp (it is what a reload can resume)', () => {
   assert.equal(pendingStampOf(1_500, true), 1_500);
   assert.equal(pendingStampOf(1_500, false), undefined);
+});
+
+test('«ارفع بيانات هذا الجهاز كمرجع» outranks the cloud row, and the other device adopts it', () => {
+  const cloud: { row: Row | null } = { row: { payload: { board: ['cloud wins'] }, updatedAt: 9_000 } };
+  // This device is behind the row and has nothing pending — normally it would
+  // adopt. The explicit recovery action is the exception.
+  const laptop = new Device(['the correct day'], 7_000);
+  const stamp = referenceStamp(cloud.row?.updatedAt ?? 0, laptop.localRevision, 9_500);
+  laptop.localRevision = stamp;
+  laptop.pending = true;
+  laptop.push(cloud);
+  assert.deepEqual(cloud.row?.payload.board, ['the correct day'], 'the reference push must be accepted');
+  assert.ok(stamp > 9_000);
+
+  // The other device is idle and strictly behind: its next poll adopts.
+  const phone = new Device(['cloud wins'], 9_000);
+  phone.read(cloud, 'poll');
+  assert.deepEqual(phone.board, ['the correct day']);
+});
+
+test('a reference stamp never goes backwards on a slow clock', () => {
+  assert.equal(referenceStamp(9_000, 7_000, 1_000), 9_001);
+  assert.equal(referenceStamp(0, 0, 1_000), 1_000);
 });

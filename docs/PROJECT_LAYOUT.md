@@ -411,8 +411,17 @@ between this device's board and the row. The rules, and the bug they replaced:
   `loadPersisted()`); it must not be repeated in a mount effect, which would
   look like an edit and re-stamp the board right after a reload.
 
+* **«ارفع بيانات هذا الجهاز كمرجع»** (`SyncCard`, in «الهيكل» under the sync
+  card) is the one deliberate exception to the guard: it publishes the board on
+  screen *over* a newer row (`referenceStamp()` in `syncRevision.ts` stamps
+  strictly above both revisions), asks for confirmation first, and touches only
+  this branch's row — the shared roster is unchanged. Every other device adopts
+  it on its next poll with no action required. Use it to repair a row that
+  drifted (or a day overwritten before this fix); the normal save/restore flow
+  does not need it.
+
 Markers for this fix in `dist/index.html`: `localPendingStamp` (14×),
-`تم تحديث البيانات من جهاز آخر` (3×).
+`تم تحديث البيانات من جهاز آخر` (3×), `ارفع بيانات هذا الجهاز كمرجع` (1×).
 
 If the marker is missing, the change was made in a file the build never reads.
 

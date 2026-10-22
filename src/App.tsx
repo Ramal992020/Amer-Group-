@@ -114,7 +114,7 @@ import {
   SHARED_ORG_ACCOUNT,
 } from './lib/sync';
 import type { SyncConfig, SyncStatus } from './lib/sync';
-import { decideSync, nextLocalRevision, pendingStampOf } from './lib/syncRevision';
+import { decideSync, nextLocalRevision, pendingStampOf, referenceStamp } from './lib/syncRevision';
 import { CurrentTurn } from './components/CurrentTurn';
 import type { BranchVisit, TeamMemberOption, UpcomingTeam } from './components/CurrentTurn';
 import { AttendanceBoard } from './components/AttendanceBoard';
@@ -810,6 +810,61 @@ function WalkInApp({
   useEffect(() => {
     pullNowRef.current = pullNow;
   }, [pullNow]);
+
+  /**
+   * «ارفع بيانات هذا الجهاز كمرجع» — publish the board on screen over whatever
+   * the cloud row holds, even when the row is newer.
+   *
+   * This is the one deliberate exception to the revision guard, used to repair
+   * the row after a device drifted (or to bring back a day that was overwritten
+   * before the ordering fix). The write is stamped above both revisions, so it
+   * is accepted, and every other device adopts it on its next poll without
+   * having to do anything.
+   */
+  const pushAsReference = useCallback(async (): Promise<boolean> => {
+    if (!syncReadyRef.current) {
+      toast('error', 'انتظر اكتمال الاتصال بالسحابة الأول');
+      return false;
+    }
+    if (pushingRef.current || branchAttendanceInFlightRef.current) {
+      toast('info', 'جارٍ حفظ تعديل آخر — حاول بعد لحظات');
+      return false;
+    }
+    pushingRef.current = true;
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const remote = await pullRemote(account);
+        if (!remote) {
+          toast('error', 'تعذّر قراءة بيانات السحابة — تحقق من الاتصال');
+          return false;
+        }
+        const stamp = referenceStamp(remote.updatedAt, revisionRef.current, syncNow());
+        const payload: PersistedWalkin = {
+          ...latestSnapshotRef.current,
+          updatedAt: stamp,
+          localPendingStamp: undefined,
+        };
+        const result = await pushRemote(account, payload, stamp);
+        if (result === 'written') {
+          revisionRef.current = stamp;
+          syncedSeqRef.current = dirtySeqRef.current;
+          pushFailuresRef.current = 0;
+          savePersisted(payload, account);
+          lastSavedStateRef.current = payload;
+          setSyncStatus('synced');
+          setLastSyncAt(Date.now());
+          toast('success', 'تم رفع بيانات هذا الجهاز كمرجع — باقي الأجهزة هتتحدّث تلقائياً');
+          return true;
+        }
+        if (result === 'failed') break;
+        // 'stale': somebody wrote in between — try once more above their stamp.
+      }
+      toast('error', 'تعذّر رفع البيانات كمرجع — تحقق من الاتصال وحاول تاني');
+      return false;
+    } finally {
+      pushingRef.current = false;
+    }
+  }, [account, toast]);
 
   /** One tick drives both directions: upload pending edits, else poll. */
   const syncTick = useCallback((): void => {
@@ -2790,6 +2845,7 @@ function WalkInApp({
                   errorDetail={syncStatus === 'error' ? getLastSyncError() : null}
                   onConnect={connectWithConfig}
                   onRetry={retrySync}
+                  onPushAsReference={pushAsReference}
                 />
               </div>
             )}

@@ -80,6 +80,18 @@ export function decideSync({
 }
 
 /**
+ * Stamp for an explicit «ارفع بيانات هذا الجهاز كمرجع» push.
+ *
+ * This is the ONE case where a device is allowed to outrank a newer cloud row:
+ * the manager says the board in front of them is the correct one (typically
+ * after a bad day / a device that had drifted). The stamp is placed strictly
+ * above BOTH revisions, so the revision-guarded write is accepted and every
+ * other device adopts it on its next poll.
+ */
+export const referenceStamp = (remoteRevision: number, localRevision: number, now: number): number =>
+  nextLocalRevision(Math.max(remoteRevision, localRevision), now);
+
+/**
  * The stamp a snapshot is saved with: the revision it is known by, plus the
  * unsent-edit stamp while it holds edits the cloud has not accepted yet.
  */
