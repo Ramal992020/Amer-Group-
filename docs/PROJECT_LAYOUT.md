@@ -376,6 +376,53 @@ any name) through `src/lib/org.ts`:
 * Polling is the source of truth; Realtime (`subscribeRemote`) only makes it
   instant when the table is in the `supabase_realtime` publication.
 
+### A device that just opens the app must never outrank the cloud row
+
+`src/lib/syncRevision.ts` (`decideSync`) is the only place that decides who wins
+between this device's board and the row. The rules, and the bug they replaced:
+
+* **A revision is only ever confirmed by the cloud** — it comes from a row that
+  was read, or from a write the server accepted. It is never bumped because the
+  screen re-rendered. The old save effect stamped `max(syncNow(), rev + 1)` on
+  *every* render, including the first one after a reload and the built-in roster
+  merge that ran on mount. So a phone that merely opened the app while holding
+  yesterday's board appeared to be the newest writer, uploaded it, and every
+  other device pulled it. That is how «فتحت من جهاز تاني فجهازي هو اللي اتغير»
+  happened, and why a tap or «بدء يوم جديد» on the *other* device was ignored
+  (its revision never beat the invented one until the tab was reloaded).
+* **Local edits are stamped when they are made** (`nextLocalRevision`, on the
+  server clock) and uploaded with that stamp. `pushRemote` compares it with the
+  row (`updated_at=lt.`), so an upload that carries a board older than the row
+  is answered `stale` and the row is kept — the guard actually works now that
+  the stamp is the edit's, not the upload's.
+* **`mode: 'connect'`** (boot and every reconnect): no pending edit ⇒ the row is
+  adopted, *always*. A device with nothing new by definition has a copy of some
+  older state, whatever its stored stamp says. A pending edit (offline work, a
+  failed upload) only wins while it is newer than the row.
+* **`mode: 'poll'`** (the 4s read): a strictly newer row is adopted; a pending
+  edit is pushed; an equal revision is a no-op.
+* The save effect also skips the upload when the board is byte-identical to what
+  it already saved (`lastSavedStateRef`), so adopting a row — or a roster
+  republish — cannot create an endless "everyone pushes the same row" loop.
+* An edit that could not be uploaded is stamped in localStorage
+  (`PersistedWalkin.localPendingStamp`, stripped from every payload we send), so
+  a reload still resumes it instead of silently dropping the day.
+* The built-in roster merge is `hydrate()`'s job (already applied by
+  `loadPersisted()`); it must not be repeated in a mount effect, which would
+  look like an edit and re-stamp the board right after a reload.
+
+* **«ارفع بيانات هذا الجهاز كمرجع»** (`SyncCard`, in «الهيكل» under the sync
+  card) is the one deliberate exception to the guard: it publishes the board on
+  screen *over* a newer row (`referenceStamp()` in `syncRevision.ts` stamps
+  strictly above both revisions), asks for confirmation first, and touches only
+  this branch's row — the shared roster is unchanged. Every other device adopts
+  it on its next poll with no action required. Use it to repair a row that
+  drifted (or a day overwritten before this fix); the normal save/restore flow
+  does not need it.
+
+Markers for this fix in `dist/index.html`: `localPendingStamp` (14×),
+`تم تحديث البيانات من جهاز آخر` (3×), `ارفع بيانات هذا الجهاز كمرجع` (1×).
+
 If the marker is missing, the change was made in a file the build never reads.
 
 ## Consequence

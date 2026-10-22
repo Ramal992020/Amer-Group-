@@ -1,5 +1,18 @@
 import { useState } from 'react';
-import { Cloud, CloudOff, Database, KeyRound, Globe, RefreshCw, Copy, Check, ShieldCheck, Info } from 'lucide-react';
+import {
+  Cloud,
+  CloudOff,
+  Database,
+  KeyRound,
+  Globe,
+  RefreshCw,
+  Copy,
+  Check,
+  ShieldCheck,
+  Info,
+  UploadCloud,
+  AlertTriangle,
+} from 'lucide-react';
 import type { SyncStatus } from '../lib/sync';
 import { SQL_SETUP, getSyncConfig, normalizeUrl } from '../lib/sync';
 import { SectionTitle, useToast } from './ui';
@@ -15,6 +28,12 @@ interface Props {
   /** Test credentials (pre-filled defaults or typed) then start syncing. */
   onConnect: (url: string, key: string) => Promise<void> | void;
   onRetry: () => void;
+  /**
+   * Publish the board currently on screen over the cloud row, even when the
+   * row is newer («ارفع بيانات هذا الجهاز كمرجع»). Resolves to whether the
+   * upload was accepted.
+   */
+  onPushAsReference: () => Promise<boolean>;
 }
 
 const syncTime = (ts: number): string =>
@@ -24,7 +43,15 @@ const syncTime = (ts: number): string =>
     second: '2-digit',
   });
 
-export function SyncCard({ account, status, lastSyncAt, errorDetail, onConnect, onRetry }: Props) {
+export function SyncCard({
+  account,
+  status,
+  lastSyncAt,
+  errorDetail,
+  onConnect,
+  onRetry,
+  onPushAsReference,
+}: Props) {
   const toast = useToast();
   const initial = getSyncConfig(account);
   const [url, setUrl] = useState(() => normalizeUrl(initial.url));
@@ -32,6 +59,7 @@ export function SyncCard({ account, status, lastSyncAt, errorDetail, onConnect, 
   const [sqlOpen, setSqlOpen] = useState(false);
   const [sqlCopied, setSqlCopied] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [refBusy, setRefBusy] = useState(false);
 
   const copySql = async () => {
     try {
@@ -62,6 +90,24 @@ export function SyncCard({ account, status, lastSyncAt, errorDetail, onConnect, 
     },
     offline: { badge: 'badge-amber', icon: <CloudOff className="size-3.5" />, text: 'بدون اتصال — يعمل محلياً' },
   }[status];
+
+  /**
+   * Publishing this device over the cloud is destructive for the other
+   * devices' unsent work, so it always asks first.
+   */
+  const pushAsReference = async () => {
+    if (refBusy || busy) return;
+    const confirmed = window.confirm(
+      'رفع بيانات هذا الجهاز كمرجع؟\n\nهيتم استبدال بيانات السجل والحضور والدور على باقي الأجهزة ببيانات الجهاز ده.\nاستخدمه بس لو متأكد إن الشاشة اللي قدامك هي الصح.',
+    );
+    if (!confirmed) return;
+    setRefBusy(true);
+    try {
+      await onPushAsReference();
+    } finally {
+      setRefBusy(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -159,6 +205,32 @@ export function SyncCard({ account, status, lastSyncAt, errorDetail, onConnect, 
           </p>
         ) : null}
       </form>
+
+      {/* Manual recovery: this device becomes the reference for every device. */}
+      <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+        <p className="mb-1.5 flex items-center gap-1.5 text-[12.5px] font-extrabold text-amber-900">
+          <AlertTriangle className="size-4 shrink-0" />
+          لو البيانات بين الأجهزة مختلفة
+        </p>
+        <p className="mb-2.5 text-[11.5px] font-medium leading-relaxed text-amber-800">
+          التطبيق بيخلي الأحدث هو اللي يكسب، وفتح التطبيق على جهاز تاني مبيقدرش يكتب فوق بياناتك. لو حصل
+          اختلاف قديم وعايز تثبّت نسخة الجهاز اللي قدامك (الحضور والسجل والدور) على كل الأجهزة، ارفعها
+          كمرجع.
+        </p>
+        <button
+          type="button"
+          onClick={() => void pushAsReference()}
+          disabled={refBusy || busy || status === 'connecting'}
+          className="btn btn-neutral w-full text-[12.5px]"
+        >
+          {refBusy ? <RefreshCw className="size-4 animate-spin" /> : <UploadCloud className="size-4" />}
+          {refBusy ? 'جارٍ رفع بيانات هذا الجهاز…' : 'ارفع بيانات هذا الجهاز كمرجع'}
+        </button>
+        <p className="mt-2 text-[11px] font-semibold leading-relaxed text-amber-700">
+          بيستبدل بيانات {account} على السحابة ← باقي الأجهزة هتتحدّث لوحدها في خلال ثوانٍ. الهيكل
+          (الأسماء والتيمات) مش بيتغيّر.
+        </p>
+      </div>
 
       {/* SQL bootstrap — visible when the table is missing */}
       <div className="mt-4 border-t border-ink-100 pt-3">

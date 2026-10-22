@@ -559,6 +559,13 @@ export interface PersistedWalkin {
   orgRevision?: number;
   /** Last modification time — used to resolve conflicts between devices. */
   updatedAt?: number;
+  /**
+   * Stamp of an edit made on this device that the cloud has not confirmed yet
+   * (offline, or an upload that failed). It is written into the LOCAL copy only
+   * and stripped from every payload we upload, so a reload can resume the edit
+   * without a device ever mistaking its old board for a newer revision.
+   */
+  localPendingStamp?: number;
 }
 
 /**
@@ -719,6 +726,8 @@ export function hydrate(parsed: Partial<PersistedWalkin>): PersistedWalkin {
     removedIds,
     orgRevision: typeof parsed.orgRevision === 'number' ? parsed.orgRevision : 0,
     updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+    localPendingStamp:
+      typeof parsed.localPendingStamp === 'number' ? parsed.localPendingStamp : undefined,
     // Accept both spellings: branch snapshots store `teamCycle`, the mirrored
     // shared chart stores `cycle`.
     teamCycle: normalizeTeamCycle(
