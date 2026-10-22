@@ -114,6 +114,7 @@ import {
   SHARED_ORG_ACCOUNT,
 } from './lib/sync';
 import type { SyncConfig, SyncStatus } from './lib/sync';
+import { decideSync, nextLocalRevision, pendingStampOf } from './lib/syncRevision';
 import { CurrentTurn } from './components/CurrentTurn';
 import type { BranchVisit, TeamMemberOption, UpcomingTeam } from './components/CurrentTurn';
 import { AttendanceBoard } from './components/AttendanceBoard';
@@ -363,16 +364,27 @@ function WalkInApp({
   // Bumped after every successful connect so the Realtime channel (re)opens.
   const [realtimeGen, setRealtimeGen] = useState(0);
 
-  const revisionRef = useRef<number>(boot.updatedAt ?? 0);
+  /**
+   * Revision of the snapshot on screen: a revision the CLOUD confirmed (read
+   * from the row, or accepted from a write) — or, while an edit is unsent, the
+   * stamp of that edit. It is never bumped just because the screen re-rendered:
+   * that is what let a device which only *opened* the app overwrite the row the
+   * other device had worked on (see `src/lib/syncRevision.ts`).
+   */
+  const revisionRef = useRef<number>(boot.localPendingStamp ?? boot.updatedAt ?? 0);
   const applyingRemoteRef = useRef(false);
   const lastSavedStateRef = useRef<PersistedWalkin>(boot);
+  /** The first save after a reload is the saved copy, not an edit. */
+  const firstSaveDoneRef = useRef(false);
   // Cloud is usable only after a successful connect/pull this session.
   const syncReadyRef = useRef(false);
   // Local edits that are not confirmed in the cloud yet — they must never be
   // dropped, otherwise a toggle made on the phone can be lost on the laptop.
   // Sequence based (not a boolean) so a change that lands *while* an upload is
   // in flight is still recognised as pending.
-  const dirtySeqRef = useRef(0);
+  // An edit that was made offline and survived a reload still counts as
+  // unsent, so it is pushed (if it is newer than the row) instead of lost.
+  const dirtySeqRef = useRef(boot.localPendingStamp ? 1 : 0);
   const syncedSeqRef = useRef(0);
   const isDirty = (): boolean => dirtySeqRef.current !== syncedSeqRef.current;
   // One upload at a time (mobile networks hate parallel writes).
@@ -415,35 +427,12 @@ function WalkInApp({
     return () => clearTimeout(t);
   }, []);
 
-  // Merge newly added built-in people into older saved data.
-  //
-  // The SAVED copy wins for the same id (a renamed member keeps the new name —
-  // the id never changes) and ids the user deleted stay deleted.
-  useEffect(() => {
-    const removed = new Set(boot.removedIds ?? []);
-    const byId = <T extends { id: string }>(base: T[], saved: T[]) => {
-      const map = new Map<string, T>();
-      base.forEach((x) => {
-        if (!removed.has(x.id)) map.set(x.id, x);
-      });
-      saved.forEach((x) => {
-        if (!removed.has(x.id)) map.set(x.id, x);
-      });
-      return [...map.values()];
-    };
-    setHeads((prev) => byId(DEFAULT_HEADS, prev));
-    setManagers((prev) => byId(DEFAULT_MANAGERS, prev));
-    setSales((prev) => byId(DEFAULT_SALES, prev));
-    setSalesState((prev) => {
-      const next = { ...prev };
-      DEFAULT_SALES.forEach((s) => {
-        if (!next[s.id]) {
-          next[s.id] = { status: 'absent', checkInOrder: null, checkInTime: null, walkCount: 0, lastServedAt: null };
-        }
-      });
-      return next;
-    });
-  }, []);
+  // Built-in people are merged into older saved data by `hydrate()` — which
+  // `loadPersisted()` already ran before this component existed (the saved copy
+  // wins for the same id, deleted ids stay deleted, new built-ins are appended).
+  // It deliberately does NOT happen in a mount effect any more: that effect
+  // rewrote the board right after a reload, which the save effect then read as
+  // "the user edited something" and stamped with a brand-new revision.
 
   const snapshot = useMemo(
     () => ({
@@ -510,11 +499,16 @@ function WalkInApp({
     latestSnapshotRef.current = snapshot;
   }, [snapshot]);
 
-  const applyRemote = useCallback((remote: Record<string, unknown>) => {
+  const applyRemote = useCallback((remote: Record<string, unknown>, revision?: number) => {
     const state = hydrate(remote as never);
     applyingRemoteRef.current = true;
     saveAutomaticBackup(account, lastSavedStateRef.current);
-    revisionRef.current = state.updatedAt ?? Date.now();
+    // The revision of the row we just read — never `Date.now()`. A device that
+    // invents a revision for data received from the cloud ends up outranking
+    // it on the next comparison and pushing the older copy back.
+    const confirmed =
+      typeof revision === 'number' ? revision : typeof state.updatedAt === 'number' ? state.updatedAt : 0;
+    revisionRef.current = confirmed;
     setSalesState(state.salesState);
     setHistory(state.history);
     setCounter(state.counter);
@@ -531,6 +525,7 @@ function WalkInApp({
     const incomingOrgRev = state.orgRevision ?? 0;
     // A same-revision copy must not replace a roster this device edited and has
     // not published yet (that is how a custom turn order used to revert to auto).
+    let republishRoster = false;
     if (canAdoptRemoteOrg(incomingOrgRev, sharedOrgRevRef.current, orgDirtyRef.current)) {
       if (state.customHeads) setHeads(state.customHeads);
       if (state.customManagers) setManagers(state.customManagers);
@@ -541,11 +536,34 @@ function WalkInApp({
       setCycleSettings(normalizeTeamCycle(state.teamCycle));
       setOrgRevision(incomingOrgRev);
     } else if (state.customHeads) {
-      dirtySeqRef.current += 1;
+      republishRoster = true;
     }
     if (Array.isArray(state.undoStack)) setUndoStack(state.undoStack);
-    savePersisted(state, account);
-    lastSavedStateRef.current = state;
+    // Our roster is newer than the row's copy, so the row is updated from this
+    // device. That is an edit like any other: it needs its own stamp, otherwise
+    // the revision-guarded write is refused as stale and the two devices keep
+    // re-reading each other without ever converging.
+    const stamp = republishRoster ? nextLocalRevision(confirmed, syncNow()) : confirmed;
+    if (republishRoster) {
+      revisionRef.current = stamp;
+      dirtySeqRef.current += 1;
+    }
+    const saved: PersistedWalkin = republishRoster
+      ? {
+          ...state,
+          // Keep OUR roster: it is the one being published back to the row.
+          customHeads: localChartRef.current.heads,
+          customManagers: localChartRef.current.managers,
+          customSales: localChartRef.current.sales,
+          removedIds: localChartRef.current.removedIds,
+          teamCycle: localChartRef.current.cycle,
+          updatedAt: stamp,
+          localPendingStamp: stamp,
+        }
+      : { ...state, updatedAt: stamp, localPendingStamp: undefined };
+    savePersisted(saved, account);
+    lastSavedStateRef.current = saved;
+    firstSaveDoneRef.current = true;
     setTimeout(() => {
       applyingRemoteRef.current = false;
     }, 0);
@@ -714,11 +732,19 @@ function WalkInApp({
   const flushPush = useCallback(async (): Promise<void> => {
     if (!syncReadyRef.current || pushingRef.current || branchAttendanceInFlightRef.current) return;
     pushingRef.current = true;
-    const previousRevision = revisionRef.current;
     const sentSeq = dirtySeqRef.current;
-    // Server-clock stamp: comparable with stamps written by the other devices.
-    const stamp = Math.max(syncNow(), previousRevision + 1);
-    const payload: PersistedWalkin = { ...latestSnapshotRef.current, updatedAt: stamp };
+    // The stamp of the EDIT, not of the upload. Bumping it at upload time made
+    // the server-side `updated_at=lt.` guard useless: every push looked like the
+    // newest write on the shared clock, even one carrying a two-day-old board.
+    // With the edit's own stamp, a row written later by another device makes
+    // this upload answer `stale` — and its data is kept instead of clobbered.
+    const stamp = revisionRef.current || syncNow();
+    const payload: PersistedWalkin = {
+      ...latestSnapshotRef.current,
+      updatedAt: stamp,
+      // Local bookkeeping must never ride the shared row.
+      localPendingStamp: undefined,
+    };
     try {
       const result = await pushRemote(account, payload, stamp);
       if (result === 'written') {
@@ -731,19 +757,18 @@ function WalkInApp({
         setSyncStatus('synced');
         setLastSyncAt(Date.now());
       } else if (result === 'stale') {
-        // Somebody else wrote a newer revision (on the shared server clock)
-        // while we were editing — adopt theirs and say so instead of silently
-        // replacing what is on this screen.
+        // A newer row exists (written later on the shared clock). Its data wins;
+        // pulling is what makes the screen match every other device.
         if (sentSeq === dirtySeqRef.current) syncedSeqRef.current = sentSeq;
-        revisionRef.current = previousRevision;
         await pullNowRef.current();
         toast('info', 'تم تحديث البيانات من جهاز آخر على نفس الحساب');
       } else {
-        // Keep the edit pending: roll the revision back so a later pull is
-        // still allowed to bring remote changes in.
-        revisionRef.current = previousRevision;
+        // Keep the edit (and its stamp) pending: the next tick retries it, and
+        // it is stamped in localStorage so a reload does not lose it either.
         pushFailuresRef.current += 1;
         setSyncStatus('error');
+        savePersisted({ ...payload, localPendingStamp: stamp }, account);
+        lastSavedStateRef.current = payload;
       }
     } finally {
       pushingRef.current = false;
@@ -763,14 +788,25 @@ function WalkInApp({
     }
     setSyncStatus('synced');
     setLastSyncAt(Date.now());
-    if (remote.updatedAt > revisionRef.current && !isDirty()) {
-      applyRemote(remote.payload);
-    } else if (isDirty()) {
-      // Our own edit is still pending — send it (with a fresh revision) rather
-      // than silently dropping it in favour of the remote state.
+    const action = decideSync({
+      remoteRevision: remote.updatedAt,
+      localRevision: revisionRef.current,
+      hasPendingEdits: isDirty(),
+      mode: 'poll',
+    });
+    if (action === 'adopt-remote') {
+      if (isDirty()) {
+        // Their write is newer than ours, so ours would be refused anyway. Say
+        // it out loud instead of letting the screen keep a copy nobody else has.
+        syncedSeqRef.current = dirtySeqRef.current;
+        toast('info', 'تم تحديث البيانات من جهاز آخر على نفس الحساب');
+      }
+      applyRemote(remote.payload, remote.updatedAt);
+    } else if (action === 'push-local') {
+      // Our own edit is still pending — send it rather than dropping it.
       await flushPushRef.current();
     }
-  }, [account, applyRemote]);
+  }, [account, applyRemote, toast]);
   useEffect(() => {
     pullNowRef.current = pullNow;
   }, [pullNow]);
@@ -831,9 +867,23 @@ function WalkInApp({
       return;
     }
     syncAttemptsRef.current = 0;
-    if (remote.updatedAt > revisionRef.current) {
-      applyRemote(remote.payload);
-    } else if (remote.updatedAt < revisionRef.current || isDirty()) {
+    // ── The reference is the CLOUD row, not whatever this device had saved ──
+    // Opening the app (or reconnecting) must show what the other devices
+    // already did. Only edits this device made and never managed to upload may
+    // outrank the row, and only while they are newer than it.
+    const action = decideSync({
+      remoteRevision: remote.updatedAt,
+      localRevision: revisionRef.current,
+      hasPendingEdits: isDirty(),
+      mode: 'connect',
+    });
+    if (action === 'adopt-remote') {
+      if (isDirty()) {
+        syncedSeqRef.current = dirtySeqRef.current;
+        toast('info', 'تم تحديث البيانات من جهاز آخر على نفس الحساب');
+      }
+      applyRemote(remote.payload, remote.updatedAt);
+    } else if (action === 'push-local') {
       // This device holds edits made while offline / before connecting —
       // upload them now instead of waiting for the next local change.
       dirtySeqRef.current += 1;
@@ -863,24 +913,55 @@ function WalkInApp({
   }, [account, syncRetry]);
 
   // Save locally + push to the cloud on every change.
+  //
+  // The stamp is taken from the EDIT (`nextLocalRevision`), and only from a
+  // real edit: the first run after a reload is just the saved copy. Bumping the
+  // revision for that first render (which is what the app used to do) made a
+  // device that only opened the app outrank the row the other device worked on
+  // — its stale board was uploaded and everyone pulled it.
   useEffect(() => {
     if (applyingRemoteRef.current) return;
-    const stamp = Math.max(syncNow(), revisionRef.current + 1);
+    if (!firstSaveDoneRef.current) {
+      firstSaveDoneRef.current = true;
+      const restored: PersistedWalkin = {
+        ...snapshot,
+        updatedAt: revisionRef.current,
+        localPendingStamp: pendingStampOf(revisionRef.current, isDirty()),
+      };
+      savePersisted(restored, account);
+      lastSavedStateRef.current = restored;
+      return;
+    }
+    const previousComparable = JSON.stringify({
+      ...lastSavedStateRef.current,
+      updatedAt: undefined,
+      localPendingStamp: undefined,
+    });
+    const nextComparable = JSON.stringify({
+      ...snapshot,
+      updatedAt: undefined,
+      localPendingStamp: undefined,
+    });
+    // The screen rendered, but the board is exactly what we already hold (the
+    // usual case right after a cloud update). That is not an edit: it must not
+    // get a new revision, otherwise every device keeps re-uploading the row it
+    // just received and the newest real edit can lose the race.
+    if (nextComparable === previousComparable) return;
+    const stamp = nextLocalRevision(revisionRef.current, syncNow());
     revisionRef.current = stamp;
-    const nextState: PersistedWalkin = { ...snapshot, updatedAt: stamp };
-    const previousComparable = JSON.stringify({ ...lastSavedStateRef.current, updatedAt: undefined });
-    const nextComparable = JSON.stringify({ ...nextState, updatedAt: undefined });
-    if (previousComparable !== nextComparable) saveAutomaticBackup(account, lastSavedStateRef.current);
+    const nextState: PersistedWalkin = {
+      ...snapshot,
+      updatedAt: stamp,
+      localPendingStamp: stamp,
+    };
+    saveAutomaticBackup(account, lastSavedStateRef.current);
     savePersisted(nextState, account);
     lastSavedStateRef.current = nextState;
 
     // Not connected yet (or a previous upload failed): remember the edit so it
     // is uploaded as soon as the cloud is reachable again.
-    if (!syncReadyRef.current) {
-      dirtySeqRef.current += 1;
-      return;
-    }
     dirtySeqRef.current += 1;
+    if (!syncReadyRef.current) return;
     const t = setTimeout(() => {
       syncTick();
     }, SYNC_PUSH_DEBOUNCE_MS);
@@ -986,9 +1067,24 @@ function WalkInApp({
   };
 
   const restoreBackup = (backupState: PersistedWalkin) => {
-    const currentState: PersistedWalkin = { ...snapshot, updatedAt: Date.now() };
+    const currentState: PersistedWalkin = { ...snapshot, updatedAt: revisionRef.current };
     saveAutomaticBackup(account, currentState);
-    applyRemote({ ...backupState, updatedAt: Date.now() } as unknown as Record<string, unknown>);
+    // A restore is a real edit: it gets the next stamp of the shared clock so
+    // it beats the row it is restoring over (and is refused if that row is
+    // already newer).
+    const stamp = nextLocalRevision(revisionRef.current, syncNow());
+    applyRemote({ ...backupState, updatedAt: stamp } as unknown as Record<string, unknown>, stamp);
+    // `applyRemote` adopts what it is given, so the restored day has to be
+    // registered as an unsent edit explicitly — otherwise it would only live on
+    // this device (the save effect skips the render that applying causes).
+    revisionRef.current = stamp;
+    dirtySeqRef.current += 1;
+    const pending: PersistedWalkin = { ...hydrate(backupState), updatedAt: stamp, localPendingStamp: stamp };
+    savePersisted(pending, account);
+    lastSavedStateRef.current = pending;
+    if (syncReadyRef.current) {
+      window.setTimeout(() => void flushPushRef.current(), SYNC_PUSH_DEBOUNCE_MS);
+    }
     toast('success', 'تمت استعادة النسخة الاحتياطية ومزامنتها');
   };
 
@@ -1561,7 +1657,10 @@ function WalkInApp({
 
       // If this is the open account, reflect the successful check-in at once.
       if (targetBranch === currentBranch) {
-        applyRemote({ ...target.state, updatedAt: target.updatedAt } as Record<string, unknown>);
+        applyRemote(
+          { ...target.state, updatedAt: target.updatedAt } as Record<string, unknown>,
+          target.updatedAt,
+        );
       }
 
       let clearedOther = false;
@@ -1581,7 +1680,10 @@ function WalkInApp({
         if (source.kind === 'ok') {
           clearedOther = source.changed;
           if (otherBranch === currentBranch) {
-            applyRemote({ ...source.state, updatedAt: source.updatedAt } as Record<string, unknown>);
+            applyRemote(
+              { ...source.state, updatedAt: source.updatedAt } as Record<string, unknown>,
+              source.updatedAt,
+            );
           }
         }
       }
@@ -1644,7 +1746,10 @@ function WalkInApp({
       }
       const currentBranch = asBranch(account);
       if (targetBranch === currentBranch) {
-        applyRemote({ ...result.state, updatedAt: result.updatedAt } as Record<string, unknown>);
+        applyRemote(
+          { ...result.state, updatedAt: result.updatedAt } as Record<string, unknown>,
+          result.updatedAt,
+        );
       }
       setSyncStatus('synced');
       setLastSyncAt(Date.now());
