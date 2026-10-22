@@ -780,7 +780,6 @@ function WalkInApp({
         // pulling is what makes the screen match every other device.
         if (sentSeq === dirtySeqRef.current) syncedSeqRef.current = sentSeq;
         await pullNowRef.current();
-        toast('info', 'تم تحديث البيانات من جهاز آخر على نفس الحساب');
       } else {
         // Keep the edit (and its stamp) pending: the next tick retries it, and
         // it is stamped in localStorage so a reload does not lose it either.
@@ -792,7 +791,7 @@ function WalkInApp({
     } finally {
       pushingRef.current = false;
     }
-  }, [account, toast]);
+  }, [account]);
   useEffect(() => {
     flushPushRef.current = flushPush;
   }, [flushPush]);
@@ -815,17 +814,17 @@ function WalkInApp({
     });
     if (action === 'adopt-remote') {
       if (isDirty()) {
-        // Their write is newer than ours, so ours would be refused anyway. Say
-        // it out loud instead of letting the screen keep a copy nobody else has.
+        // Their write is newer than ours, so ours would be refused anyway; the
+        // screen simply shows the shared row. No popup: the board is expected to
+        // follow the other devices, and the toast fired on every such poll.
         syncedSeqRef.current = dirtySeqRef.current;
-        toast('info', 'تم تحديث البيانات من جهاز آخر على نفس الحساب');
       }
       applyRemote(remote.payload, remote.updatedAt);
     } else if (action === 'push-local') {
       // Our own edit is still pending — send it rather than dropping it.
       await flushPushRef.current();
     }
-  }, [account, applyRemote, toast]);
+  }, [account, applyRemote]);
   useEffect(() => {
     pullNowRef.current = pullNow;
   }, [pullNow]);
@@ -952,10 +951,7 @@ function WalkInApp({
       mode: 'connect',
     });
     if (action === 'adopt-remote') {
-      if (isDirty()) {
-        syncedSeqRef.current = dirtySeqRef.current;
-        toast('info', 'تم تحديث البيانات من جهاز آخر على نفس الحساب');
-      }
+      if (isDirty()) syncedSeqRef.current = dirtySeqRef.current;
       applyRemote(remote.payload, remote.updatedAt);
     } else if (action === 'push-local') {
       // This device holds edits made while offline / before connecting —

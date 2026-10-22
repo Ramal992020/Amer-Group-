@@ -443,8 +443,17 @@ between this device's board and the row. The rules, and the bug they replaced:
   drifted (or a day overwritten before this fix); the normal save/restore flow
   does not need it.
 
+* **Sync never pops a toast.** Adopting the shared row (on boot, on a poll, or
+  after a `stale` upload) happens silently — the board simply follows the other
+  devices; the old «تم تحديث البيانات من جهاز آخر على نفس الحساب» banner fired
+  on every such poll and covered the dashboard on the phone. The only sync
+  messages left are the explicit ones (connect success/failure, «ارفع بيانات
+  هذا الجهاز كمرجع», and «تم تحديث الهيكل من الفرع الآخر» when the shared
+  *roster* actually changed names/members).
+
 Markers for this fix in `dist/index.html`: `localPendingStamp` (14×),
-`تم تحديث البيانات من جهاز آخر` (3×), `ارفع بيانات هذا الجهاز كمرجع` (1×).
+`ارفع بيانات هذا الجهاز كمرجع` (1×), and `تم تحديث البيانات من جهاز آخر` must
+appear **0** times (the banner above is gone).
 
 If the marker is missing, the change was made in a file the build never reads.
 
