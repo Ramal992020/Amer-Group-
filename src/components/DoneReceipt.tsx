@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CheckCircle2, Copy, Check, ArrowLeft, User, Users, Crown, TriangleAlert } from 'lucide-react';
-import { formatTime, receiptText, visitHeadline } from '../lib/walkin';
+import { formatTime, receiptText, turnDisplayName, visitHeadline } from '../lib/walkin';
 import type { Assignment, ManagerTeam } from '../lib/walkin';
 import { Modal } from './ui';
 
@@ -96,10 +96,10 @@ export function DoneReceipt({ assignment, next, onClose }: Props) {
           </Row>
         </div>
 
-        {/* next — the team that follows in the cycle, without a sales name */}
+        {/* next — the successor team, with its presentation name when configured */}
         <div className="mt-3 space-y-1 rounded-2xl border border-brand-100 bg-brand-50/70 p-4 text-left">
           <Row icon={<ArrowLeft className="size-4" />} label="Next :">
-            {next ? <span className="text-brand-700">تيم {next.name}</span> : <span className="text-ink-400">—</span>}
+            {next ? <span className="text-brand-700">{turnDisplayName(next).isPerson ? '' : 'تيم '}{turnDisplayName(next).name}</span> : <span className="text-ink-400">—</span>}
           </Row>
           <p dir="rtl" className="pl-[106px] text-[10.5px] font-semibold text-ink-400">
             الدور على التيم — يتم اختيار السيلز يدوياً عند الدور

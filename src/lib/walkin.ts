@@ -1090,6 +1090,20 @@ export function createNewDaySalesState(
 
 const normalizeTeamName = (name: string): string => name.trim().toLowerCase().replace(/[\s_-]+/g, '');
 
+/** Presentation-only names for specific teams; the actual turn and roster stay unchanged. */
+export function turnDisplayName(team: Pick<ManagerTeam, 'name' | 'ar'>): { name: string; isPerson: boolean } {
+  const names = [team.name, team.ar].map((name) => normalizeTeamName(name ?? ''));
+  const replacements: { aliases: string[]; name: string }[] = [
+    { aliases: ['Hany Elshenawy', 'Hany Elshennawy', 'هاني الشناوي'], name: 'Zeina Hosny' },
+    { aliases: ['Ahmed Sultan', 'Ahmed Soltan', 'أحمد سلطان', 'احمد سلطان'], name: 'Hala Elfar' },
+    { aliases: ['Dina Abdo', 'Dina Abdou', 'Dina Abdo Ahmed', 'دينا عبده', 'دينا عبدو', 'دينا عبده أحمد'], name: 'Ganna Elmalah' },
+  ];
+  const replacement = replacements.find(({ aliases }) =>
+    aliases.some((alias) => names.includes(normalizeTeamName(alias))),
+  );
+  return replacement ? { name: replacement.name, isPerson: true } : { name: team.name, isPerson: false };
+}
+
 /** Every name a slot can be saved under — its own name plus its aliases. */
 const slotNames = (slot: AutomaticTeamSlot): string[] => [slot.name, ...(slot.aliases ?? [])];
 
@@ -1796,7 +1810,7 @@ export function visitHeadline(visit: VisitType | undefined): string {
  */
 export function receiptText(assignment: Assignment, next: ManagerTeam | null): string {
   const headline = visitHeadline(assignment.visitType);
-  const nextName = next ? next.name : '—';
+  const nextName = next ? turnDisplayName(next).name : '—';
   const shifted = assignment.shiftedTeams ?? [];
   if (shifted.length > 0) {
     return (

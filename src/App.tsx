@@ -35,6 +35,7 @@ import {
   SALES as DEFAULT_SALES,
   computeTurnPlan,
   successorTeam,
+  turnDisplayName,
   canAdoptRemoteOrg,
   swapInCustomOrder,
   teamRoundFrom,
@@ -2350,11 +2351,11 @@ function WalkInApp({
                         <>
                           <div className="flex items-center gap-3 rounded-2xl border border-ink-100 bg-ink-50/70 p-4">
                             <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-brand-600 pulse-ring text-[15px] font-black text-white">
-                              {onTurnTeam.name.slice(0, 2)}
+                              {turnDisplayName(onTurnTeam).name.slice(0, 2)}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <p className="truncate font-display text-[20px] font-black leading-tight text-ink-900">
-                                الدور على تيم {onTurnTeam.name}
+                              <p className="font-display text-[20px] font-black leading-tight text-ink-900">
+                                الدور على {turnDisplayName(onTurnTeam).isPerson ? null : 'تيم '}<bdi>{turnDisplayName(onTurnTeam).name}</bdi>
                               </p>
                               {turnPlan?.onTurnPinned && (
                                 <button
