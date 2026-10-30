@@ -274,8 +274,11 @@ SITE and RESTA both rotate by **team (manager)**, never by a preselected person:
   * visit with passed-over teams (exact, one line per team):
     `Walk in (Site) / <team> Shifted ❌ / <sales> ✅ / Manager : … / Head : … / Next : …`
   `Next` is **always the successor team in the cycle** (`successorTeam`), even if
-  that team has nobody present — it is not the serving team and never a sales
-  name. The spelling `Shifted ❌` is fixed on purpose.
+  that team has nobody present — it is not the serving team. For display only,
+  Hany Elshenawy, Ahmed Sultan and Dina Abdo are shown as Zeina Hosny, Hala
+  Elfar and Ganna Elmalah respectively, both on the home card and in `Next`.
+  This does not change team selection or the roster. The spelling `Shifted ❌`
+  is fixed on purpose.
 * Visit type is **Site or Resta only** (no «Walk in» option in the modal). The
   default is the branch you are signed into (RESTA → `resta`, otherwise `site`)
   and it is restored after every confirmed client. `walkin` remains only as the

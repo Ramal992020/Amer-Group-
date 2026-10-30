@@ -26,6 +26,7 @@ import {
   teamOrderFrom,
   teamRoundFrom,
   turnPinFor,
+  turnDisplayName,
   visitHeadline,
 } from './walkin.ts';
 import type {
@@ -1277,7 +1278,7 @@ test('a normal receipt keeps the standard Done lines', () => {
   };
   assert.equal(
     receiptText(a, NEXT_TEAM),
-    'Walk in (Resta) Done ✅\nSales : Manar Done✅\nManager : Rewaida\nHead : Khaled Youssef\nNext : Hany Elshenawy',
+    'Walk in (Resta) Done ✅\nSales : Manar Done✅\nManager : Rewaida\nHead : Khaled Youssef\nNext : Zeina Hosny',
   );
 });
 
@@ -1301,13 +1302,34 @@ test('a receipt with passed-over teams uses the exact Shifted ❌ format', () =>
       'Manar ✅',
       'Manager : Rewaida',
       'Head : Khaled Youssef',
-      'Next : Hany Elshenawy',
+      'Next : Zeina Hosny',
     ].join('\n'),
   );
   // The spelling is fixed on purpose.
   assert.ok(receiptText(a, NEXT_TEAM).includes('Shifted ❌'));
   assert.ok(!receiptText(a, NEXT_TEAM).includes('Shiffted'));
   assert.ok(!receiptText(a, NEXT_TEAM).includes('Shiftted'));
+});
+
+test('turn display names apply to the three teams only, without changing the underlying team', () => {
+  const cases = [
+    [' HANY-elshenawy ', 'هاني الشناوي', 'Zeina Hosny'],
+    ['Ahmed Sultan', 'أحمد سلطان', 'Hala Elfar'],
+    ['Dina Abdo', 'دينا عبده', 'Ganna Elmalah'],
+  ];
+  const a: Assignment = { ...assignment({ managerId: 'ahmed', managerName: 'Ahmed Yossry', headId: 'khaled', headName: 'Khaled Youssef' }), salesName: 'Manar', visitType: 'site' };
+  for (const [name, ar, expected] of cases) {
+    const team: ManagerTeam = { id: 'custom-id', name, ar, headId: 'wael' };
+    assert.deepEqual(turnDisplayName(team), { name: expected, isPerson: true });
+    assert.ok(receiptText(a, team).endsWith(`Next : ${expected}`));
+    const shifted: ShiftedTeam = { managerId: 'other', managerName: 'Other', headId: 'wael', headName: 'Wael', reason: 'absent' };
+    assert.ok(receiptText({ ...a, shiftedTeams: [shifted] }, team).endsWith(`Next : ${expected}`));
+    assert.equal(team.name, name);
+  }
+  const other: ManagerTeam = { id: 'other', name: 'Perry', ar: '', headId: 'wael' };
+  assert.deepEqual(turnDisplayName(other), { name: 'Perry', isPerson: false });
+  assert.ok(receiptText(a, other).endsWith('Next : Perry'));
+  assert.deepEqual(turnDisplayName({ name: 'غير معروف', ar: 'هاني الشناوي' }), { name: 'Zeina Hosny', isPerson: true });
 });
 
 test('the visit headline names the branch and has no Walk in default for Site/Resta', () => {
