@@ -177,7 +177,11 @@ resolves, in this order:
 1. `DIRECTOR_RULES` — name rules that override the Head above the manager.
    **Sayed Naser reports to Ahmed Fawzy**, so every row of his team prints
    `Ahmed Fawzy` in `Director` (matches `sayed nas…` and `سيد ناصر`, whatever
-   id/head the team has — ids added from «الهيكل» are generated, not built-in);
+   id/head the team has — ids added from «الهيكل» are generated, not built-in).
+   **Zeina Hosny's director is Hany Elshenawy**, so every row of her team prints
+   `Hany Elshenawy` (matches `zeina hos…` / `hany el shen…` and the Arabic
+   spellings, so the rule holds whether «الهيكل» stored the team under the
+   display name «Zeina Hosny» or under «Hany Elshenawy»);
 2. the built-in team id (`DIRECTORS`, e.g. `ahmed` → Sayed Magdy);
 3. a known manager name (`DIRECTORS_BY_NAME`);
 4. the Head's name (the old fallback).

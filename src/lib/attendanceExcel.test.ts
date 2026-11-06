@@ -337,3 +337,35 @@ test('Sayed Naser’s director is Ahmed Fawzy instead of the head above him', ()
   assert.equal(sheet.B4.v, 'Ahmed Fawzy');
   assert.equal(sheet.C3.v, 'Wael El Desoky');
 });
+
+test('Zeina Hosny’s director is Hany Elshenawy instead of the head above her', () => {
+  assert.equal(directorFor('Zeina Hosny'), 'Hany Elshenawy');
+  assert.equal(directorFor('  zeina   hosny '), 'Hany Elshenawy');
+  assert.equal(directorFor('Zeina Husny'), 'Hany Elshenawy');
+  assert.equal(directorFor('زينة حسني'), 'Hany Elshenawy');
+  // The team is stored under either name in «الهيكل» (Zeina is the display name
+  // of Hany's team), so both spellings resolve to the same director.
+  assert.equal(directorFor('Hany Elshenawy'), 'Hany Elshenawy');
+  assert.equal(directorFor('Hany El-Shenawy'), 'Hany Elshenawy');
+  assert.equal(directorFor('هاني الشناوي'), 'Hany Elshenawy');
+  // A head above the team never overrides it — nor does any generated team id.
+  assert.equal(directorFor('Zeina Hosny', 'Khaled Youssef'), 'Hany Elshenawy');
+  assert.equal(
+    directorFor('Zeina Hosny', 'Khaled Youssef', 'custom-zeina-482'),
+    'Hany Elshenawy',
+  );
+
+  // It reaches the sheet: every row of the team prints Hany Elshenawy.
+  const manager: ManagerTeam = { id: 'hany-elshenawy', name: 'Zeina Hosny', ar: 'زينة حسني', headId: 'khaled' };
+  const head: HeadGroup = { id: 'khaled', name: 'Khaled Youssef', ar: '' };
+  const sheet = createAttendanceWorkbook([
+    {
+      person: { id: 'zeina-sales', name: 'Nour Sales', managerId: manager.id, headId: head.id },
+      manager,
+      head,
+      attendance: stateAt(1, '2026-10-19T08:00:00.000Z'),
+    },
+  ]).Sheets['Sales Team'];
+  assert.equal(sheet.B3.v, 'Hany Elshenawy');
+  assert.equal(sheet.C3.v, 'Khaled Youssef');
+});
