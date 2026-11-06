@@ -58,6 +58,21 @@ const DIRECTOR_RULES: { matches: (name: string) => boolean; director: string }[]
       name.startsWith('سيدنصر'),
     director: 'Ahmed Fawzy',
   },
+  // «Zeina Hosny» is the display name of Hany Elshenawy's team (`turnDisplayName`
+  // in `walkin.ts`), and her director is Hany Elshenawy himself — whatever head
+  // the team sits under. Both spellings of the team match, so it does not matter
+  // whether «الهيكل» stored the team as «Zeina Hosny» or as «Hany Elshenawy».
+  {
+    matches: (name) =>
+      name.startsWith('zeinahosn') ||
+      name.startsWith('zeinahusn') ||
+      name.startsWith('زيناحسن') ||
+      name.startsWith('زينهحسن') ||
+      name.startsWith('hanyelshen') ||
+      name.startsWith('هانيالشناو') ||
+      name.startsWith('هانيشناو'),
+    director: 'Hany Elshenawy',
+  },
 ];
 
 export const directorFor = (managerName: string, fallback = '', managerId = ''): string => {
