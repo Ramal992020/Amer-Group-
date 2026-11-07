@@ -55,6 +55,12 @@ export const HIDDEN_FROM_ATTENDANCE: readonly (readonly string[])[] = [
   ['Moataz Mandoh', 'Moataz Mandouh', 'Moataz Mandou', 'Moataz Manduh', 'معتز مندوه', 'معتز مندو'],
 ];
 
+// This exclusion applies only to attendance, even if the person is active in
+// the org chart. It must not disable the person or their team elsewhere.
+const ALWAYS_HIDDEN_SQUASHED = new Set(
+  ['Hesham Maged', 'Hisham Maged', 'هشام ماجد'].map(normalizeAttendanceName),
+);
+
 const HIDDEN_SQUASHED = new Set(
   HIDDEN_FROM_ATTENDANCE.flat().map((spelling) => normalizeAttendanceName(spelling)),
 );
@@ -71,12 +77,15 @@ export const isDefaultHiddenFromAttendance = (
 };
 
 /**
- * True when this person's own row must not appear in the attendance table:
+ * True when this person's own row must not appear in the attendance table.
+ * Hesham Maged is always excluded, including when explicitly active. Otherwise:
  *  • `disabled === true`  → explicitly disabled from «الهيكل»;
  *  • `disabled === false` → explicitly activated from «الهيكل» (appears in attendance);
  *  • `disabled === undefined` → uses `HIDDEN_FROM_ATTENDANCE`.
  */
 export const isHiddenFromAttendance = (person: AttendanceNameLike | string): boolean => {
+  const names = typeof person === 'string' ? [person] : [person.name, person.ar];
+  if (names.some((name) => ALWAYS_HIDDEN_SQUASHED.has(normalizeAttendanceName(name ?? '')))) return true;
   if (typeof person !== 'string') {
     if (person.disabled === true) return true;
     if (person.disabled === false) return false;
