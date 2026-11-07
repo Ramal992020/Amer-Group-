@@ -4,6 +4,7 @@ import {
   CalendarCheck,
   ListOrdered,
   FileText,
+  FileSpreadsheet,
   UserCog,
   Menu,
   X,
@@ -122,6 +123,7 @@ import { AttendanceBoard } from './components/AttendanceBoard';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ClientExcelBuilder } from './components/ClientExcelBuilder';
 import { ClientRegistration } from './components/ClientRegistration';
+import { DailySheet } from './components/DailySheet';
 import { DoneReceipt } from './components/DoneReceipt';
 import { AddMemberPanel, ManageOrgPanel } from './components/ManageOrgPanel';
 import { CycleSettingsPanel } from './components/CycleSettingsPanel';
@@ -151,7 +153,7 @@ interface DoneInfo {
 const defaultVisitFor = (account: string): BranchVisit =>
   account.trim().toUpperCase() === 'RESTA' ? 'resta' : 'site';
 
-type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage';
+type Tab = 'dashboard' | 'today' | 'log' | 'order' | 'manage' | 'daily-sheet';
 type Branch = 'SITE' | 'RESTA';
 
 const asBranch = (value: string | null | undefined): Branch | null => {
@@ -291,9 +293,11 @@ const NAV: { id: Tab; label: string; icon: typeof CalendarCheck }[] = [
   { id: 'order', label: 'الترتيب', icon: ListOrdered },
   { id: 'log', label: 'السجل', icon: FileText },
   { id: 'manage', label: 'الهيكل', icon: UserCog },
+  { id: 'daily-sheet', label: 'الشيت اليومي', icon: FileSpreadsheet },
 ];
 
 const TITLES: Record<Tab, { title: string; sub: string }> = {
+  'daily-sheet': { title: 'الشيت اليومي', sub: 'تسجيل وتصدير عملاء Walk in' },
   dashboard: { title: 'لوحة التحكم', sub: 'نظرة شاملة على حركة الـ Walk-In اليوم' },
   today: { title: 'الحضور', sub: 'سجّل حضور السيلز وتابع الحالة لحظياً' },
   order: { title: 'الترتيب', sub: 'الترتيب بالمديرين — والسيلز يُختار يدوياً من التيم' },
@@ -2395,7 +2399,7 @@ function WalkInApp({
                     </div>
                   </section>
 
-                  <ClientRegistration account={account} directors={activeManagers} />
+                  <ClientRegistration account={account} />
                 </div>
 
                 {/* recent + status */}
@@ -2614,6 +2618,8 @@ function WalkInApp({
             )}
 
             {/* ═══════ LOG ═══════ */}
+            {tab === 'daily-sheet' && <DailySheet account={account} />}
+
             {tab === 'log' && <HistoryPanel history={history} onUndoLast={undoLast} />}
 
             {/* ═══════ ORDER ═══════ */}
@@ -2955,7 +2961,7 @@ function WalkInApp({
 
       {/* ══════════ Mobile bottom nav ══════════ */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-ink-100 bg-white/95 px-2 pb-2 pt-1.5 backdrop-blur-xl lg:hidden">
-        <div className="mx-auto grid max-w-md grid-cols-5">
+        <div className="mx-auto grid max-w-md grid-cols-6">
           {NAV.map((item) => {
             const active = tab === item.id;
             return (
@@ -2973,7 +2979,7 @@ function WalkInApp({
                 >
                   <item.icon className="size-[19px]" strokeWidth={active ? 2.5 : 2} />
                 </span>
-                <span className={cn('text-[10.5px] font-extrabold', active ? 'text-brand-600' : 'text-ink-400')}>
+                <span className={cn('text-[9px] sm:text-[10.5px] font-extrabold', active ? 'text-brand-600' : 'text-ink-400')}>
                   {item.label}
                 </span>
               </button>
