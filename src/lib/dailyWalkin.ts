@@ -8,6 +8,19 @@ export interface DailyWalkinRow {
   director: string;
 }
 
+export const dailyWalkinKey = (account: string) => `amer-daily-walkin-${account.toLowerCase()}`;
+
+export function readDailyWalkins(account: string): DailyWalkinRow[] {
+  try {
+    const data = JSON.parse(localStorage.getItem(dailyWalkinKey(account)) || '[]');
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+
+export function saveDailyWalkins(account: string, rows: DailyWalkinRow[]): void {
+  localStorage.setItem(dailyWalkinKey(account), JSON.stringify(rows));
+}
+
 /** Calendar dates are local to the device, not UTC. */
 export function localDay(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
