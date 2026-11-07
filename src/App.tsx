@@ -2395,7 +2395,7 @@ function WalkInApp({
                     </div>
                   </section>
 
-                  <ClientRegistration account={account} />
+                  <ClientRegistration account={account} directors={activeManagers} />
                 </div>
 
                 {/* recent + status */}
