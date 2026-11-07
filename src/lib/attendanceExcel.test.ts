@@ -308,6 +308,21 @@ test('the listed managers never appear in the attendance table, whatever the spe
   assert.ok(names.includes('Sam Sales'), 'everybody else keeps their row');
 });
 
+test('Hesham Maged is excluded from attendance without disabling his team', () => {
+  const hesham = { id: 'hesham', name: 'Hesham Maged', ar: 'هشام ماجد', managerId: 'team', headId: 'head', disabled: false };
+  const colleague = { id: 'colleague', name: 'Another Sales', managerId: 'team', headId: 'head' };
+  const roster: AttendanceRoster = { sales: [hesham, colleague], managers: [], heads: [] };
+  assert.ok(isHiddenFromAttendance(hesham));
+  assert.ok(isHiddenFromAttendance({ name: 'other', ar: 'هشام ماجد' }));
+  assert.ok(!isHiddenFromAttendance({ name: 'Hesham Other' }));
+  assert.deepEqual(visibleAttendanceSales(roster.sales).map((p) => p.id), ['colleague']);
+  assert.deepEqual(attendanceRowsFor(roster, {}).map((row) => row.person.id), ['colleague']);
+  const sheet = createAttendanceWorkbook(roster.sales.map((person) => ({ person }))).Sheets['Sales Team'];
+  const cells = (XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true }) as unknown[][]).flat();
+  assert.ok(!cells.includes('Hesham Maged'));
+  assert.ok(cells.includes('Another Sales'));
+});
+
 test('Sayed Naser’s director is Ahmed Fawzy instead of the head above him', () => {
   assert.equal(directorFor('Sayed Naser'), 'Ahmed Fawzy');
   assert.equal(directorFor('  sayed   nasser '), 'Ahmed Fawzy');
