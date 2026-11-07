@@ -3,6 +3,7 @@ import { CheckCircle2, Download, MessageCircle, Plus, Trash2, Undo2, UserPlus } 
 import * as XLSX from 'xlsx-js-style';
 import { formatTime } from '../lib/walkin';
 import { SectionTitle } from './ui';
+import { createDailyWalkinWorkbook, dailyWalkinFilename, localDay, type DailyWalkinRow } from '../lib/dailyWalkin';
 
 export interface FrontDeskClient {
   id: string;
@@ -209,7 +210,20 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
   </div>
 );
 
-export function ClientRegistration({ account }: { account: string }) {
+export function ClientRegistration({ account, directors }: { account: string; directors: { id: string; name: string }[] }) {
+  const archiveKey = `amer-daily-walkin-${account.toLowerCase()}`;
+  const [archive, setArchive] = useState<DailyWalkinRow[]>(() => {
+    try { const data = JSON.parse(localStorage.getItem(archiveKey) || '[]'); return Array.isArray(data) ? data : []; }
+    catch { return []; }
+  });
+  const [sheetDay, setSheetDay] = useState(() => localDay(new Date()));
+  const [director, setDirector] = useState('');
+  const saveArchive = (rows: DailyWalkinRow[]) => {
+    try { localStorage.setItem(archiveKey, JSON.stringify(rows)); }
+    catch { setError('تعذر حفظ سجل Walk in على الجهاز'); return false; }
+    setArchive(rows);
+    return true;
+  };
   const [clients, setClients] = useState<FrontDeskClient[]>(() => loadClients(account));
   const [form, setForm] = useState({
     name: '',
@@ -223,9 +237,9 @@ export function ClientRegistration({ account }: { account: string }) {
   const [justSaved, setJustSaved] = useState<number | null>(null);
   const [lastWasWalkIn, setLastWasWalkIn] = useState(false);
 
-  const isWalkIn = form.reasonChoice === 'WALK IN';
   const finalReason =
     form.reasonChoice === '__other__' ? form.reasonCustom.trim() : form.reasonChoice;
+  const isWalkIn = isWalkInReason(finalReason);
 
   const active = clients.filter((c) => !c.finishedAt);
   const done = clients.filter((c) => !!c.finishedAt);
@@ -263,6 +277,9 @@ export function ClientRegistration({ account }: { account: string }) {
       createdAt: new Date().toISOString(),
       finishedAt: null,
     };
+    if (isWalkInReason(finalReason) && !saveArchive([...archive, {
+      id: client.id, name: client.name, mobile: client.mobile, createdAt: client.createdAt, director,
+    }])) return;
     const nextList = [...clients, client];
     persistClients(account, nextList);
     setClients(nextList);
@@ -292,6 +309,7 @@ export function ClientRegistration({ account }: { account: string }) {
         }),
       );
     }
+    setDirector('');
     setForm({ name: '', mobile: '', unit: '', reasonChoice: '', reasonCustom: '', staff: RECEPTION_STAFF[0] });
     setError('');
   };
@@ -406,6 +424,14 @@ export function ClientRegistration({ account }: { account: string }) {
             </Field>
           )}
         </div>
+        {isWalkIn && (
+          <Field label="Rotation Turn — Director (يمكن تحديده لاحقاً)">
+            <select className="field" value={director} onChange={(e) => setDirector(e.target.value)}>
+              <option value="">لم يتم تحديد المدير بعد</option>
+              {directors.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>
+          </Field>
+        )}
         <Field label="موظف الاستقبال">
           <select
             className="field"
@@ -437,6 +463,27 @@ export function ClientRegistration({ account }: { account: string }) {
           تسجيل العميل
         </button>
       </form>
+
+      <div className="mt-4 rounded-2xl border border-ink-100 bg-ink-50/60 p-3 space-y-3">
+        <p className="text-[13px] font-extrabold text-ink-900">شيت Walk in اليومي</p>
+        <p className="text-[11px] text-ink-500">يُحفظ السجل على هذا الجهاز لكل فرع. اختر التاريخ لتنزيل الشيت، حتى لو لم يدخل عملاء.</p>
+        <div className="flex flex-wrap gap-2">
+          <input aria-label="تاريخ شيت Walk in" type="date" className="field flex-1" value={sheetDay} onChange={e => setSheetDay(e.target.value)} />
+          <button type="button" disabled={!sheetDay} className="btn btn-secondary" onClick={() => XLSX.writeFile(createDailyWalkinWorkbook(sheetDay, archive), dailyWalkinFilename(sheetDay))}>
+            <Download className="size-4" /> تنزيل شيت Walk in
+          </button>
+        </div>
+        {archive.filter(row => { const d = new Date(row.createdAt); return !Number.isNaN(d.getTime()) && localDay(d) === sheetDay; }).map(row => (
+          <div key={row.id} className="flex flex-wrap items-center gap-2">
+            <span className="flex-1 text-xs font-bold">{row.name} — {row.mobile}</span>
+            <select aria-label={`Director لـ ${row.name}`} className="field w-auto" value={row.director} onChange={e => saveArchive(archive.map(item => item.id === row.id ? { ...item, director: e.target.value } : item))}>
+              <option value="">لم يتم تحديد المدير</option>
+              {row.director && !directors.some(d => d.name === row.director) && <option value={row.director}>{row.director}</option>}
+              {directors.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>
+          </div>
+        ))}
+      </div>
 
       {clients.length > 0 && (
         <div className="mt-4">
