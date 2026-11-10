@@ -12,6 +12,7 @@ import {
 } from '../lib/attendanceExcel';
 import type { AttendanceWorkbookRow } from '../lib/attendanceExcel';
 import { visibleAttendanceSales } from '../lib/attendanceVisibility';
+import { attendanceStatement } from '../lib/attendanceStatement';
 
 type Branch = 'SITE' | 'RESTA';
 const branchDisplayName = (branch: Branch): string => branch === 'SITE' ? 'الموقع' : 'ريستا';
@@ -202,7 +203,7 @@ export function AttendanceBoard({ account, salesState, onToggle, onCheckOut, onF
   const copyStatement = async (person: SalesPerson, branch: Branch) => {
     const st = salesState[person.id];
     const time = st?.checkInTime ? formatTime(st.checkInTime) : formatTime(new Date().toISOString());
-    const text = `NAME : ${person.name}\nBRANCH : ${branch}\nTIME : ${time}`;
+    const text = attendanceStatement(person.name, branch, time, person.isManager);
     try {
       await navigator.clipboard.writeText(text);
     } catch {
