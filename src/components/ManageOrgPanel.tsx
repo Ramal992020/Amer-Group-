@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Ban, Check, Crown, Network, Pencil, Plus, RotateCcw, Trash2, UserCheck, UserPlus, Users, X } from 'lucide-react';
+import { Ban, Check, ChevronDown, Crown, MoreHorizontal, Network, Pencil, Plus, Search, Trash2, UserCheck, UserPlus, UserRound, Users, X } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson } from '../lib/walkin';
 import { isHeadDisabled, isPersonDisabled, isTeamDisabled } from '../lib/walkin';
 import { isDefaultHiddenFromAttendance } from '../lib/attendanceVisibility';
@@ -382,7 +382,8 @@ export function ManageOrgPanel({
 }: Props) {
   const toast = useToast();
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [filterMode, setFilterMode] = useState<'all' | 'active' | 'disabled'>('all');
+  const [filterMode, setFilterMode] = useState<'all' | 'active' | 'disabled'>('active');
+  const [query, setQuery] = useState('');
 
   const isHiddenByDefault = (person: SalesPerson): boolean =>
     !isPersonDisabled(person, managers, heads) &&
@@ -391,7 +392,7 @@ export function ManageOrgPanel({
 
   const disabledSalesCount = sales.filter((s) => isPersonDisabled(s, managers, heads)).length;
   const hiddenSalesCount = sales.filter((s) => isHiddenByDefault(s)).length;
-  const activeSalesCount = sales.length - disabledSalesCount;
+  const activeSalesCount = sales.length - disabledSalesCount - hiddenSalesCount;
   const inactiveFilterCount = disabledSalesCount + hiddenSalesCount;
 
   const startEdit = (kind: Kind, id: string, name: string, ar = '', phone = '', shiftTime = '10:00') => {
@@ -422,458 +423,117 @@ export function ManageOrgPanel({
       ? `${heads.length} Heads · ${managers.length} تيمات · ${activeSalesCount} نشط · ${disabledSalesCount} معطّل`
       : `${heads.length} Heads · ${managers.length} تيمات · ${sales.length} أفراد`;
 
+  const matchesPerson = (person: SalesPerson) => {
+    const inactive = isPersonDisabled(person, managers, heads) || isHiddenByDefault(person);
+    return filterMode === 'all' || (filterMode === 'disabled' ? inactive : !inactive);
+  };
+  const term = query.trim().toLocaleLowerCase();
+  const matchesText = (...values: (string | undefined)[]) => !term || values.some(v => v?.toLocaleLowerCase().includes(term));
+  const editor = (label: string, withAr = false, withDetails = false, withPhone = false) => draft && (
+    <NameEditor label={label} name={draft.name} ar={draft.ar} withAr={withAr} withDetails={withDetails} withPhone={withPhone}
+      phone={draft.phone} shiftTime={draft.shiftTime} onName={v => setDraft({ ...draft, name: v })}
+      onAr={v => setDraft({ ...draft, ar: v })} onPhone={v => setDraft({ ...draft, phone: v })}
+      onShiftTime={v => setDraft({ ...draft, shiftTime: v })} onSave={saveDraft} onCancel={() => setDraft(null)} />
+  );
+  const actionClass = 'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-right text-xs font-bold text-ink-700 hover:bg-ink-100';
+
   return (
-    <section className="surface anim-fade-up p-4">
-      <SectionTitle
-        title="الهيكل الحالي"
-        subtitle={subtitle}
-        icon={<Network className="size-4.5" strokeWidth={2.1} />}
-      />
-
-      <p className="mb-3 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-[11px] font-semibold leading-relaxed text-emerald-700">
-        <Pencil className="mt-0.5 size-3.5 shrink-0" />
-        <span>
-          للتعديل اضغط أيقونة القلم بجانب الاسم، ولإخفاء أي شخص مؤقتاً من الحضور والأدوار والتطبيق بالكامل بدون حذف
-          بياناته اضغط «تعطيل» — وعند الضغط على «تفعيل» يظهر اسمه في الحضور ويمتلك كل الصلاحيات، والتحديث يظهر في الفرعين
-          SITE و RESTA.
-        </span>
-      </p>
-
-      {/* فلتر سريع لعرض الكل أو النشطين أو المعطّلين */}
-      <div className="mb-3 grid grid-cols-3 gap-1.5 rounded-xl bg-ink-100 p-1">
+    <section className="surface anim-fade-up p-4 sm:p-5">
+      <SectionTitle title="الهيكل الحالي" subtitle={subtitle} icon={<Network className="size-4.5" strokeWidth={2.1} />} />
+      <p className="mb-4 text-xs leading-relaxed text-ink-500">افتح الفريق لعرض أعضائه، واستخدم قائمة الخيارات للتعديل أو التعطيل أو الحذف. التغييرات تظهر في SITE و RESTA.</p>
+      <div className="mb-4 grid grid-cols-3 gap-1.5 rounded-xl bg-ink-100 p-1">
         {[
           { id: 'all' as const, label: `الكل (${sales.length})` },
           { id: 'active' as const, label: `النشطون (${activeSalesCount})` },
           { id: 'disabled' as const, label: `المعطّلون (${inactiveFilterCount})` },
-        ].map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setFilterMode(item.id)}
-            aria-pressed={filterMode === item.id}
-            className={cn(
-              'rounded-lg py-1.5 text-[11.5px] font-extrabold transition',
-              filterMode === item.id
-                ? 'bg-brand-600 text-white shadow-[0_3px_8px_-2px_rgba(227,6,19,0.45)]'
-                : 'text-ink-500 hover:bg-white hover:text-ink-900',
-            )}
-          >
+        ].map(item => (
+          <button key={item.id} type="button" onClick={() => setFilterMode(item.id)} aria-pressed={filterMode === item.id}
+            className={cn('rounded-lg px-1 py-2 text-[11px] font-extrabold transition sm:text-xs', filterMode === item.id ? 'bg-brand-600 text-white' : 'text-ink-500 hover:bg-white')}>
             {item.label}
           </button>
         ))}
       </div>
-
-      <div className="space-y-3">
-        {heads.map((h) => {
+      <label className="relative mb-5 block">
+        <Search className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-ink-400" />
+        <input value={query} onChange={e => setQuery(e.target.value)} aria-label="البحث في الهيكل" placeholder="البحث عن عضو أو فريق أو Head..." className="field pr-9" />
+      </label>
+      <div className="space-y-6">
+        {heads.map(h => {
           const headDisabled = isHeadDisabled(h);
-          const hMgrs = managers.filter((m) => m.headId === h.id);
-          const matchesFilter = (s: SalesPerson) => {
-            const off = isPersonDisabled(s, managers, heads) || isHiddenByDefault(s);
-            if (filterMode === 'disabled') return off;
-            if (filterMode === 'active') return !isPersonDisabled(s, managers, heads);
-            return true;
-          };
-          const headHasMatchingContent =
-            filterMode === 'all' ||
-            (filterMode === 'disabled' &&
-              (headDisabled ||
-                hMgrs.some(
-                  (m) =>
-                    isTeamDisabled(m, sales, heads) ||
-                    sales.some((s) => s.managerId === m.id && matchesFilter(s)),
-                ))) ||
-            (filterMode === 'active' &&
-              !headDisabled &&
-              hMgrs.some(
-                (m) =>
-                  !isTeamDisabled(m, sales, heads) ||
-                  sales.some((s) => s.managerId === m.id && matchesFilter(s)),
-              ));
-
-          if (!headHasMatchingContent) return null;
-
+          const headMatches = matchesText(h.name, h.ar);
+          const teams = managers.filter(m => m.headId === h.id).map(m => {
+            const teamDisabled = isTeamDisabled(m, sales, heads);
+            const teamMatches = headMatches && !!term || matchesText(m.name, m.ar);
+            const allMembers = sales.filter(s => s.managerId === m.id).sort((a, b) => Number(!!b.isManager) - Number(!!a.isManager));
+            const members = allMembers.filter(s => matchesPerson(s) && (teamMatches || matchesText(s.name, s.phone)));
+            const includeTeam = filterMode === 'all' || (filterMode === 'disabled' ? teamDisabled : !teamDisabled);
+            return { m, teamDisabled, members, visible: members.length > 0 || (includeTeam && teamMatches) };
+          }).filter(item => item.visible);
+          const showHead = teams.length > 0 || ((filterMode === 'all' || (filterMode === 'disabled' ? headDisabled : !headDisabled)) && headMatches);
+          if (!showHead) return null;
           return (
-            <div
-              key={h.id}
-              className={cn(
-                'overflow-hidden rounded-xl border transition',
-                headDisabled ? 'border-dashed border-ink-300 bg-ink-50/40' : 'border-ink-100',
-              )}
-            >
-              {draft && draft.kind === 'head' && draft.id === h.id ? (
-                <div className="bg-ink-50/80 p-2.5">
-                  <NameEditor
-                    label="تعديل اسم الـ Head"
-                    name={draft.name}
-                    ar={draft.ar}
-                    withAr
-                    onName={(v) => setDraft({ ...draft, name: v })}
-                    onAr={(v) => setDraft({ ...draft, ar: v })}
-                    onSave={saveDraft}
-                    onCancel={() => setDraft(null)}
-                  />
-                </div>
-              ) : (
-                <div className="flex items-center justify-between gap-2 bg-ink-50/80 px-3 py-2.5">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <Crown
-                      className={cn('size-4 shrink-0', headDisabled ? 'text-ink-400' : 'text-brand-600')}
-                      strokeWidth={2.2}
-                    />
-                    <span
-                      className={cn(
-                        'truncate text-[13px] font-extrabold',
-                        headDisabled ? 'text-ink-400 line-through' : 'text-ink-900',
-                      )}
-                    >
-                      {h.name}
-                    </span>
-                    {h.ar && h.ar !== h.name && (
-                      <span className="truncate text-[11px] font-bold text-ink-400">{h.ar}</span>
-                    )}
-                    {headDisabled && (
-                      <span className="shrink-0 rounded bg-ink-200 px-1.5 py-0.5 text-[9.5px] font-extrabold text-ink-600">
-                        معطّل
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {headDisabled ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onToggleHeadDisabled(h.id, false);
-                          toast('success', `تم تفعيل ${h.name} وتيماته واستعاد كامل الصلاحيات`);
-                        }}
-                        aria-label={`تفعيل ${h.name}`}
-                        title="تفعيل الـ Head وتيماته"
-                        className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-1 text-[10.5px] font-extrabold text-white transition hover:bg-emerald-700"
-                      >
-                        <UserCheck className="size-3" />
-                        تفعيل
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onToggleHeadDisabled(h.id, true);
-                          toast('info', `تم تعطيل ${h.name} وتيماته بالكامل`);
-                        }}
-                        aria-label={`تعطيل ${h.name}`}
-                        title="تعطيل الـ Head وتيماته مؤقتاً"
-                        className="inline-flex items-center gap-1 rounded-lg border border-ink-200 bg-white px-2 py-1 text-[10.5px] font-extrabold text-ink-500 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
-                      >
-                        <Ban className="size-3" />
-                        تعطيل
-                      </button>
-                    )}
-                    <button
-                      onClick={() => startEdit('head', h.id, h.name, h.ar)}
-                      aria-label={`تعديل اسم ${h.name}`}
-                      title="تعديل الاسم"
-                      className="grid size-7 place-items-center rounded-lg text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
-                    {heads.length > 2 && (
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`حذف Head "${h.name}"؟ سيتم حذف مديريه وسيلز تيماته.`)) {
-                            onDeleteHead(h.id);
-                            toast('info', `تم حذف ${h.name}`);
-                          }
-                        }}
-                        aria-label={`حذف ${h.name}`}
-                        title="حذف"
-                        className="grid size-7 place-items-center rounded-lg text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2 p-2.5">
-                {hMgrs.map((m) => {
-                  const teamDisabled = isTeamDisabled(m, sales, heads);
-                  // The manager has his own attendance row (`isManager`) — it is
-                  // edited and toggled just like any sales row, phone number included.
-                  const mManager = sales.filter((s) => s.isManager && s.managerId === m.id);
-                  const mSales = sales.filter((s) => s.managerId === m.id && !s.isManager);
-                  const mTeamAll = [...mManager, ...mSales];
-                  const mTeam = filterMode === 'all' ? mTeamAll : mTeamAll.filter(matchesFilter);
-                  if (filterMode === 'disabled' && !teamDisabled && mTeam.length === 0) return null;
-                  if (filterMode === 'active' && teamDisabled && mTeam.length === 0) return null;
-
-                  const editingManager = draft && draft.kind === 'manager' && draft.id === m.id;
-                  return (
-                    <div
-                      key={m.id}
-                      className={cn(
-                        'rounded-lg p-2.5 transition',
-                        teamDisabled
-                          ? 'border border-dashed border-ink-300 bg-ink-100/60'
-                          : 'bg-ink-50/60',
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        {editingManager && draft ? (
-                          <NameEditor
-                            label="تعديل اسم المدير وتيم، ورقمه"
-                            name={draft.name}
-                            ar={draft.ar}
-                            withAr
-                            withPhone
-                            phone={draft.phone}
-                            onName={(v) => setDraft({ ...draft, name: v })}
-                            onAr={(v) => setDraft({ ...draft, ar: v })}
-                            onPhone={(v) => setDraft({ ...draft, phone: v })}
-                            onSave={saveDraft}
-                            onCancel={() => setDraft(null)}
-                          />
-                        ) : (
-                          <>
-                            <span
-                              className={cn(
-                                'flex min-w-0 items-center gap-1.5 text-[12px] font-extrabold',
-                                teamDisabled ? 'text-ink-400' : 'text-ink-700',
-                              )}
-                            >
-                              <Users className="size-3.5 shrink-0 text-ink-400" />
-                              <span className={cn('truncate', teamDisabled && 'line-through')}>
-                                تيم {m.name}
-                              </span>
-                              {m.ar && m.ar !== m.name && (
-                                <span className="truncate text-[11px] font-bold text-ink-400">{m.ar}</span>
-                              )}
-                              {m.phone && (
-                                <span dir="ltr" className="tnum shrink-0 text-[10.5px] font-bold text-ink-400">
-                                  {m.phone}
-                                </span>
-                              )}
-                              {teamDisabled && (
-                                <span className="shrink-0 rounded bg-ink-200 px-1.5 py-0.5 text-[9.5px] font-extrabold text-ink-600">
-                                  معطّل
-                                </span>
-                              )}
-                            </span>
-                            <div className="flex shrink-0 items-center gap-1">
-                              {teamDisabled ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onToggleManagerDisabled(m.id, false);
-                                    toast('success', `تم تفعيل تيم ${m.name} واستعاد كامل الصلاحيات`);
-                                  }}
-                                  aria-label={`تفعيل تيم ${m.name}`}
-                                  title="تفعيل التيم بالكامل"
-                                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white transition hover:bg-emerald-700"
-                                >
-                                  <UserCheck className="size-2.5" />
-                                  تفعيل التيم
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onToggleManagerDisabled(m.id, true);
-                                    toast('info', `تم تعطيل تيم ${m.name} بالكامل`);
-                                  }}
-                                  aria-label={`تعطيل تيم ${m.name}`}
-                                  title="تعطيل التيم بالكامل مؤقتاً"
-                                  className="inline-flex items-center gap-1 rounded-md border border-ink-200 bg-white px-1.5 py-0.5 text-[10px] font-extrabold text-ink-500 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
-                                >
-                                  <Ban className="size-2.5" />
-                                  تعطيل التيم
-                                </button>
-                              )}
-                              <button
-                                onClick={() => startEdit('manager', m.id, m.name, m.ar, m.phone ?? '')}
-                                aria-label={`تعديل اسم تيم ${m.name}`}
-                                title="تعديل الاسم"
-                                className="grid size-6 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                              >
-                                <Pencil className="size-3" />
-                              </button>
-                              {managers.length > 1 && (
-                                <button
-                                  onClick={() => {
-                                    if (window.confirm(`حذف تيم "${m.name}" وسيلز التيم؟`)) {
-                                      onDeleteManager(m.id);
-                                      toast('info', `تم حذف تيم ${m.name}`);
-                                    }
-                                  }}
-                                  aria-label={`حذف تيم ${m.name}`}
-                                  title="حذف"
-                                  className="grid size-6 shrink-0 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                                >
-                                  <Trash2 className="size-3" />
-                                </button>
-                              )}
-                            </div>
-                          </>
-                        )}
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        {mTeam.map((s) => {
-                          const editingSales = draft && draft.kind === 'sales' && draft.id === s.id;
-                          const personDisabled = isPersonDisabled(s, managers, heads);
-                          const hiddenByDefault = isHiddenByDefault(s);
-                          if (editingSales && draft) {
-                            return (
-                              <div key={s.id} className="basis-full">
-                                <NameEditor
-                                  label={`تعديل بيانات ${s.isManager ? 'المدير' : 'السيلز'} (تيم ${m.name})`}
-                                  name={draft.name}
-                                  ar=""
-                                  withDetails
-                                  phone={draft.phone}
-                                  shiftTime={draft.shiftTime}
-                                  onName={(v) => setDraft({ ...draft, name: v })}
-                                  onPhone={(v) => setDraft({ ...draft, phone: v })}
-                                  onShiftTime={(v) => setDraft({ ...draft, shiftTime: v })}
-                                  onSave={saveDraft}
-                                  onCancel={() => setDraft(null)}
-                                />
-                              </div>
-                            );
-                          }
-                          return (
-                            <span
-                              key={s.id}
-                              className={cn(
-                                'inline-flex items-center gap-1 rounded-lg border py-0.5 pe-1 ps-2 text-[11px] font-bold transition',
-                                personDisabled
-                                  ? 'border-dashed border-ink-300 bg-ink-100/80 text-ink-400'
-                                  : hiddenByDefault
-                                    ? 'border-amber-200 bg-amber-50/60 text-ink-700'
-                                    : 'border-ink-200 bg-white text-ink-700',
-                              )}
-                            >
-                              <span
-                                className={cn(
-                                  'max-w-[10rem] truncate',
-                                  personDisabled && 'line-through decoration-ink-400',
-                                )}
-                              >
-                                {s.name}
-                              </span>
-                              {s.isManager && (
-                                <span
-                                  className={cn(
-                                    'shrink-0 rounded px-1 text-[9px] font-extrabold',
-                                    personDisabled
-                                      ? 'bg-ink-200 text-ink-500'
-                                      : 'bg-brand-50 text-brand-600',
-                                  )}
-                                >
-                                  مدير
-                                </span>
-                              )}
-                              {personDisabled && (
-                                <span className="shrink-0 rounded bg-ink-200 px-1 text-[9px] font-extrabold text-ink-600">
-                                  معطّل
-                                </span>
-                              )}
-                              {hiddenByDefault && (
-                                <span className="shrink-0 rounded bg-amber-100 px-1 text-[9px] font-extrabold text-amber-800">
-                                  مخفي من الحضور
-                                </span>
-                              )}
-
-                              {personDisabled ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onToggleSalesDisabled(s.id, false);
-                                    toast(
-                                      'success',
-                                      `تم تفعيل ${s.name} — ظهر اسمه في الحضور ويمتلك كل الصلاحيات`,
-                                    );
-                                  }}
-                                  aria-label={`تفعيل ${s.name}`}
-                                  title="تفعيل الشخص — سيظهر اسمه في الحضور ويمتلك كل الصلاحيات"
-                                  className="inline-flex items-center gap-0.5 rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white transition hover:bg-emerald-700"
-                                >
-                                  <RotateCcw className="size-2.5" />
-                                  تفعيل
-                                </button>
-                              ) : (
-                                <>
-                                  {hiddenByDefault && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        onToggleSalesDisabled(s.id, false);
-                                        toast(
-                                          'success',
-                                          `تم تفعيل ${s.name} — ظهر اسمه في الحضور ويمتلك كل الصلاحيات`,
-                                        );
-                                      }}
-                                      aria-label={`تفعيل ${s.name}`}
-                                      title="إظهار الاسم في الحضور وتفعيل كل الصلاحيات"
-                                      className="inline-flex items-center gap-0.5 rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white transition hover:bg-emerald-700"
-                                    >
-                                      <UserCheck className="size-2.5" />
-                                      تفعيل
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      onToggleSalesDisabled(s.id, true);
-                                      toast(
-                                        'info',
-                                        `تم تعطيل ${s.name} — أُخفي من الحضور والأدوار والتطبيق بالكامل`,
-                                      );
-                                    }}
-                                    aria-label={`تعطيل ${s.name}`}
-                                    title="تعطيل الشخص مؤقتاً — سيختفي من التطبيق بالكامل مع حفظ بياناته"
-                                    className="inline-flex items-center gap-0.5 rounded-md bg-ink-100 px-1.5 py-0.5 text-[10px] font-extrabold text-ink-500 transition hover:bg-amber-100 hover:text-amber-800"
-                                  >
-                                    <Ban className="size-2.5" />
-                                    تعطيل
-                                  </button>
-                                </>
-                              )}
-
-                              <button
-                                onClick={() =>
-                                  startEdit('sales', s.id, s.name, '', s.phone ?? m.phone ?? '', s.shiftTime || '10:00')
-                                }
-                                aria-label={`تعديل بيانات ${s.name}`}
-                                title={s.isManager ? 'تعديل الاسم والرقم والشيفت' : 'تعديل الاسم والرقم'}
-                                className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                              >
-                                <Pencil className="size-3" />
-                              </button>
-                              {!s.isManager && (
-                                <button
-                                  onClick={() => {
-                                    if (window.confirm(`حذف السيلز "${s.name}"؟`)) {
-                                      onDeleteSales(s.id);
-                                      toast('info', `تم حذف ${s.name}`);
-                                    }
-                                  }}
-                                  aria-label={`حذف ${s.name}`}
-                                  title="حذف"
-                                  className="grid size-5 place-items-center rounded-md text-ink-300 transition hover:bg-brand-50 hover:text-brand-600"
-                                >
-                                  <X className="size-3" />
-                                </button>
-                              )}
-                            </span>
-                          );
-                        })}
-                        {mSales.length === 0 && filterMode === 'all' && (
-                          <span className="text-[11px] font-medium text-ink-300">لا يوجد سيلز بعد</span>
-                        )}
-                      </div>
+            <div key={h.id} className="space-y-3">
+              {draft?.kind === 'head' && draft.id === h.id ? editor('تعديل اسم الـ Head', true) : (
+                <div className="flex items-center gap-2 border-b border-ink-100 pb-2">
+                  <Crown className="size-4 text-ink-400" />
+                  <div className="min-w-0 flex-1"><p className="truncate text-sm font-extrabold">{h.name} <span className="text-xs text-ink-400">Head</span></p>{h.ar && h.ar !== h.name && <p className="text-xs text-ink-400">{h.ar}</p>}</div>
+                  {headDisabled && <span className="rounded-lg bg-ink-100 px-2 py-1 text-[10px] font-bold text-ink-500">معطّل</span>}
+                  <details className="relative shrink-0">
+                    <summary aria-label={`خيارات ${h.name}`} className="grid size-9 cursor-pointer list-none place-items-center rounded-lg text-ink-500 hover:bg-ink-100"><MoreHorizontal className="size-5" /></summary>
+                    <div className="absolute left-0 z-20 w-44 rounded-xl border border-ink-100 bg-white p-1 shadow-lg">
+                      <button type="button" className={actionClass} onClick={() => { onToggleHeadDisabled(h.id, !headDisabled); toast('info', headDisabled ? `تم تفعيل ${h.name} وتيماته` : `تم تعطيل ${h.name} وتيماته`); }}>{headDisabled ? <UserCheck className="size-4" /> : <Ban className="size-4" />}{headDisabled ? 'تفعيل الـ Head' : 'تعطيل الـ Head'}</button>
+                      <button type="button" className={actionClass} onClick={() => startEdit('head', h.id, h.name, h.ar)}><Pencil className="size-4" />تعديل</button>
+                      {heads.length > 2 && <button type="button" className={actionClass} onClick={() => { if (window.confirm(`حذف Head "${h.name}"؟ سيتم حذف مديريه وسيلز تيماته.`)) { onDeleteHead(h.id); toast('info', `تم حذف ${h.name}`); } }}><Trash2 className="size-4" />حذف</button>}
                     </div>
-                  );
-                })}
+                  </details>
+                </div>
+              )}
+              <div className="space-y-3">
+                {teams.map(({ m, teamDisabled, members }) => (
+                  <details key={`${m.id}-${term ? 'search' : 'normal'}`} open={term ? true : undefined} className="group rounded-2xl border border-ink-200 bg-white shadow-sm">
+                    <summary className="flex cursor-pointer list-none items-center gap-3 rounded-2xl p-3.5 hover:bg-ink-50" aria-label={`فتح أو إغلاق تيم ${m.name}`}>
+                      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-ink-100 text-ink-500"><Users className="size-5" /></span>
+                      <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">تيم {m.name}</span><span className="block text-[11px] text-ink-400">{members.length} أعضاء ظاهرين{teamDisabled ? ' · معطّل' : ''}</span></span>
+                      <ChevronDown className="size-4 shrink-0 text-ink-400 transition group-open:rotate-180" />
+                    </summary>
+                    <div className="space-y-3 border-t border-ink-100 p-3">
+                      {draft?.kind === 'manager' && draft.id === m.id ? editor('تعديل بيانات الفريق والمدير', true, false, true) : (
+                        <details className="relative">
+                          <summary className="w-fit cursor-pointer list-none rounded-lg bg-ink-50 px-3 py-2 text-xs font-bold text-ink-600">خيارات الفريق ···</summary>
+                          <div className="absolute right-0 z-20 mt-1 w-48 rounded-xl border border-ink-100 bg-white p-1 shadow-lg">
+                            {headDisabled && <p className="px-3 py-2 text-[11px] text-ink-500">فعّل الـ Head أولاً لتفعيل الفريق</p>}
+                            <button type="button" disabled={headDisabled} className={cn(actionClass, headDisabled && 'opacity-50')} onClick={() => { onToggleManagerDisabled(m.id, !teamDisabled); toast('info', teamDisabled ? `تم تفعيل تيم ${m.name}` : `تم تعطيل تيم ${m.name}`); }}>{teamDisabled ? <UserCheck className="size-4" /> : <Ban className="size-4" />}{teamDisabled ? 'تفعيل الفريق' : 'تعطيل الفريق'}</button>
+                            <button type="button" className={actionClass} onClick={() => startEdit('manager', m.id, m.name, m.ar, m.phone ?? '')}><Pencil className="size-4" />تعديل الفريق</button>
+                            {managers.length > 1 && <button type="button" className={actionClass} onClick={() => { if (window.confirm(`حذف تيم "${m.name}" وسيلز التيم؟`)) { onDeleteManager(m.id); toast('info', `تم حذف تيم ${m.name}`); } }}><Trash2 className="size-4" />حذف الفريق</button>}
+                          </div>
+                        </details>
+                      )}
+                      {members.map(s => {
+                        const disabled = isPersonDisabled(s, managers, heads);
+                        const hidden = isHiddenByDefault(s);
+                        if (draft?.kind === 'sales' && draft.id === s.id) return <div key={s.id}>{editor(`تعديل بيانات ${s.name}`, false, true)}</div>;
+                        return (
+                          <div key={s.id} className="flex items-center gap-3 rounded-xl border border-ink-100 bg-ink-50/40 p-3">
+                            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-ink-100 text-ink-400"><UserRound className="size-5" /></span>
+                            <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5"><span className="break-words text-sm font-extrabold">{s.name}</span>{s.isManager && <span className="rounded-md bg-brand-50 px-1.5 py-0.5 text-[10px] font-bold text-brand-600">مدير</span>}</div><p dir="ltr" className="mt-1 text-right text-xs text-ink-400">{s.phone || (s.isManager ? m.phone : '') || 'لا يوجد رقم هاتف'}</p></div>
+                            <span className={cn('shrink-0 rounded-full px-2 py-1 text-[10px] font-bold', disabled || hidden ? 'bg-ink-100 text-ink-500' : 'bg-emerald-50 text-emerald-700')}>{disabled ? 'معطّل' : hidden ? 'مخفي من الحضور' : 'نشط'}</span>
+                            <details className="relative shrink-0">
+                              <summary aria-label={`خيارات ${s.name}`} className="grid size-9 cursor-pointer list-none place-items-center rounded-lg text-ink-500 hover:bg-ink-100"><MoreHorizontal className="size-5" /></summary>
+                              <div className="absolute left-0 z-20 w-44 rounded-xl border border-ink-100 bg-white p-1 shadow-lg">
+                                {(disabled || hidden) && (headDisabled || teamDisabled) && <p className="px-3 py-2 text-[11px] text-ink-500">فعّل {headDisabled ? 'الـ Head' : 'الفريق'} أولاً</p>}
+                                {(disabled || hidden) && !headDisabled && !teamDisabled && <button type="button" className={actionClass} onClick={() => { onToggleSalesDisabled(s.id, false); toast('success', `تم تفعيل ${s.name}`); }}><UserCheck className="size-4" />تفعيل</button>}
+                                {!disabled && <button type="button" className={actionClass} onClick={() => { onToggleSalesDisabled(s.id, true); toast('info', `تم تعطيل ${s.name}`); }}><Ban className="size-4" />تعطيل</button>}
+                                <button type="button" className={actionClass} onClick={() => startEdit('sales', s.id, s.name, '', s.phone ?? (s.isManager ? m.phone : '') ?? '', s.shiftTime || '10:00')}><Pencil className="size-4" />تعديل</button>
+                                {!s.isManager && <button type="button" className={actionClass} onClick={() => { if (window.confirm(`حذف السيلز "${s.name}"؟`)) { onDeleteSales(s.id); toast('info', `تم حذف ${s.name}`); } }}><Trash2 className="size-4" />حذف</button>}
+                              </div>
+                            </details>
+                          </div>
+                        );
+                      })}
+                      {members.length === 0 && <p className="py-2 text-center text-xs text-ink-400">لا يوجد أعضاء مطابقون للعرض الحالي</p>}
+                    </div>
+                  </details>
+                ))}
               </div>
             </div>
           );
