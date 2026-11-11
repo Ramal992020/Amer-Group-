@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { Ban, Check, ChevronDown, Crown, MoreHorizontal, Network, Pencil, Plus, Search, Trash2, UserCheck, UserPlus, UserRound, Users, X } from 'lucide-react';
+import { Ban, Check, ChevronDown, Crown, Download, MoreHorizontal, Network, Pencil, Plus, Search, Trash2, UserCheck, UserPlus, UserRound, Users, X } from 'lucide-react';
 import type { HeadGroup, ManagerTeam, SalesPerson } from '../lib/walkin';
 import { isHeadDisabled, isPersonDisabled, isTeamDisabled } from '../lib/walkin';
 import { isDefaultHiddenFromAttendance } from '../lib/attendanceVisibility';
 import { SectionTitle, useToast } from './ui';
 import { cn } from '../utils/cn';
+import XLSX from 'xlsx-js-style';
+import { createActiveRosterWorkbook } from '../lib/activeRosterExcel';
 
 interface AddProps {
   heads: HeadGroup[];
@@ -440,6 +442,15 @@ export function ManageOrgPanel({
   return (
     <section className="surface anim-fade-up p-4 sm:p-5">
       <SectionTitle title="الهيكل الحالي" subtitle={subtitle} icon={<Network className="size-4.5" strokeWidth={2.1} />} />
+      <button type="button" className="btn btn-secondary mb-4" onClick={() => {
+        try {
+          XLSX.writeFile(createActiveRosterWorkbook(heads, managers, sales), 'active_managers_sales.xlsx');
+          toast('success', 'تم تجهيز كشف المديرين والسيلز المفعلين');
+        } catch {
+          toast('error', 'تعذر تنزيل كشف المفعلين');
+        }
+      }}><Download className="size-4" />تحميل Excel المفعلين</button>
+      <p className="mb-4 text-xs leading-relaxed text-ink-500">يشمل الكشف الموظفين المفعلين فقط، ولا يشمل Perry.</p>
       <p className="mb-4 text-xs leading-relaxed text-ink-500">افتح الفريق لعرض أعضائه، واستخدم قائمة الخيارات للتعديل أو التعطيل أو الحذف. التغييرات تظهر في SITE و RESTA.</p>
       <div className="mb-4 grid grid-cols-3 gap-1.5 rounded-xl bg-ink-100 p-1">
         {[
