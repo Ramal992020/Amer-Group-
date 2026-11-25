@@ -1,0 +1,252 @@
+/* ════════════════════════════════════════════════════════════
+   AMER GROUP — Landing page styles
+   Design system: elayadesign/ai-design-skills (landing-page-design)
+   Dark premium: flat #131209 / #181818 / #1F1F1F / #272727 / #313131
+   One typeface (Cairo — Arabic support), no italics, weight ≤ 700
+   ════════════════════════════════════════════════════════════ */
+
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Cairo", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Cairo", ui-sans-serif, system-ui, sans-serif;
+
+  --color-base: #181818;
+  --color-base-alt: #131209;
+  --color-surface: #1f1f1f;
+  --color-elevated: #272727;
+  --color-overlay: #313131;
+  --color-brand: #e30613;
+  --color-brand-dark: #bf040f;
+  --color-text: #ffffff;
+  --color-text-muted: #b9b9b9;
+  --color-text-faint: #9b9b9b;
+}
+
+:root {
+  --ease-out-expo: cubic-bezier(0.22, 1, 0.36, 1);
+  --brand: #e30613;
+  --brand-dark: #bf040f;
+  --ring: rgba(227, 6, 19, 0.55);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-base);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+/* ── Named text styles (B1) — defined once, reused everywhere ── */
+.heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; }
+.heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; }
+.heading-3 { font-size: 2.25rem; line-height: 1.111; font-weight: 600; }
+.heading-4 { font-size: 1.875rem; line-height: 1.2; font-weight: 600; }
+.heading-5 { font-size: 1.5rem; line-height: 1.333; font-weight: 600; }
+.heading-6 { font-size: 1.25rem; line-height: 1.4; font-weight: 600; }
+.title-1 { font-size: 1.25rem; line-height: 1.4; font-weight: 500; }
+.title-2 { font-size: 1.125rem; line-height: 1.555; font-weight: 500; }
+.title-3 { font-size: 1rem; line-height: 1.5; font-weight: 500; }
+.title-4 { font-size: 0.875rem; line-height: 1.428; font-weight: 500; }
+.title-5 { font-size: 0.75rem; line-height: 1.333; font-weight: 500; }
+.body-1 { font-size: 1rem; line-height: 1.5; font-weight: 600; }
+.body-2 { font-size: 1rem; line-height: 1.5; font-weight: 500; }
+.body-3 { font-size: 1rem; line-height: 1.5; font-weight: 400; }
+.body-4 { font-size: 0.875rem; line-height: 1.428; font-weight: 600; }
+.body-5 { font-size: 0.875rem; line-height: 1.428; font-weight: 500; }
+.body-6 { font-size: 0.875rem; line-height: 1.428; font-weight: 400; }
+.button-lg { font-size: 1.125rem; line-height: 1.555; font-weight: 600; }
+.button-md { font-size: 1rem; line-height: 1.5; font-weight: 600; }
+.button-sm { font-size: 0.875rem; line-height: 1.428; font-weight: 600; }
+.button-xsm { font-size: 0.75rem; line-height: 1.333; font-weight: 600; }
+.caption-1 { font-size: 0.875rem; line-height: 1.428; font-weight: 500; }
+.caption-2 { font-size: 0.875rem; line-height: 1.428; font-weight: 400; }
+.caption-3 { font-size: 0.75rem; line-height: 1.333; font-weight: 600; }
+.caption-4 { font-size: 0.75rem; line-height: 1.333; font-weight: 500; }
+.caption-5 { font-size: 0.75rem; line-height: 1.333; font-weight: 400; }
+
+@media (max-width: 767px) {
+  .heading-1 { font-size: 3rem; }
+  .heading-2 { font-size: 2.25rem; line-height: 1.111; }
+  .heading-3 { font-size: 1.875rem; line-height: 1.2; }
+}
+
+/* Balanced line breaking — no orphaned words (B1) */
+.heading-1, .heading-2, .heading-3, .heading-4, .heading-5, .heading-6 {
+  text-wrap: balance;
+}
+.body-3, .body-6, .body-2, .body-5, p {
+  text-wrap: pretty;
+}
+
+/* ── Hero heading: the one allowed gradient — text only (B5) ── */
+.hero-heading {
+  background: linear-gradient(to right, #ffffff 0%, #9b9b9b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ── Buttons — main buttons: 8px vertical, 12px horizontal (B2) ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 300ms var(--ease-out-expo),
+              color 300ms var(--ease-out-expo),
+              border-color 300ms var(--ease-out-expo),
+              transform 500ms var(--ease-out-expo);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:active { transform: scale(0.98); }
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.btn-primary { background: var(--brand); color: #ffffff; border: 1px solid var(--brand); }
+.btn-primary:hover { background: var(--brand-dark); border-color: var(--brand-dark); }
+.btn-ghost { background: transparent; color: #ffffff; border: 1px solid var(--color-overlay); }
+.btn-ghost:hover { background: var(--color-elevated); border-color: var(--color-overlay); }
+.btn-inverted { background: #ffffff; color: #131209; border: 1px solid #ffffff; }
+.btn-inverted:hover { background: #ededed; border-color: #ededed; }
+
+/* ── Scroll reveal (B7) — sections rise 32px and fade, once ── */
+.reveal {
+  opacity: 0;
+  transform: translateY(32px);
+  transition: opacity 700ms var(--ease-out-expo), transform 700ms var(--ease-out-expo);
+  will-change: transform, opacity;
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Tagline reveal (B11) — words wake one at a time ── */
+.tagline-word {
+  color: rgba(255, 255, 255, 0.28);
+  transition: color 650ms var(--ease-out-expo);
+  display: inline-block;
+}
+.tagline-word.is-on {
+  color: #ffffff;
+}
+
+/* ── Nav: floating pill (B7) ── */
+.nav-pill {
+  background: rgba(24, 24, 24, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-overlay);
+  border-radius: 9999px;
+}
+.nav-panel {
+  background: rgba(19, 18, 9, 0.94);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+.nav-link {
+  transition: color 300ms var(--ease-out-expo), background-color 300ms var(--ease-out-expo);
+}
+.menu-toggle-line {
+  transform-origin: center;
+  transition: transform 500ms var(--ease-out-expo), opacity 300ms var(--ease-out-expo);
+}
+.menu-item {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 400ms var(--ease-out-expo), transform 400ms var(--ease-out-expo);
+}
+.menu-open .menu-item {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Form fields ── */
+.field {
+  background: var(--color-elevated);
+  border: 1px solid var(--color-overlay);
+  border-radius: 8px;
+  color: #ffffff;
+  padding: 8px 12px;
+  width: 100%;
+  transition: border-color 300ms var(--ease-out-expo), box-shadow 300ms var(--ease-out-expo);
+}
+.field::placeholder { color: #7f7f7f; }
+.field:hover { border-color: #3d3d3d; }
+.field:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(227, 6, 19, 0.28);
+}
+.field[aria-invalid="true"] { border-color: #f23b49; }
+.field-error { color: #ffb3b8; }
+
+/* ── Legal dialogs ── */
+dialog.legal {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-overlay);
+  border-radius: 16px;
+  padding: 0;
+  max-width: 560px;
+  width: calc(100% - 32px);
+}
+dialog.legal::backdrop {
+  background: rgba(0, 0, 0, 0.66);
+}
+
+/* ── Skip link (B10) ── */
+.skip-link {
+  position: absolute;
+  inset-inline-start: 16px;
+  top: -64px;
+  z-index: 100;
+  background: #ffffff;
+  color: #131209;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: top 300ms var(--ease-out-expo);
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+/* ── Reduced motion (B7/B11) ── */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: opacity 200ms linear;
+  }
+  .tagline-word {
+    color: #ffffff;
+    transition: none;
+  }
+  .menu-item {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .btn, .nav-link, .menu-toggle-line { transition-duration: 200ms; }
+}
