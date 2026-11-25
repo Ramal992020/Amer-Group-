@@ -471,36 +471,3 @@ The stale root-level duplicates (`App.tsx`, `sync.ts`, `walkin.ts`, `auth.ts`,
 copies) have been removed so that a future fix cannot be written into a file
 that never ships. If you ever need a file at the root again, it must be added to
 `index.html`/`tsconfig.json`/an import — otherwise it is dead weight.
-
-## Multi-page build (added 2026-11-25)
-
-The build is no longer a single page. `vite.config.ts` now registers three Vite
-entries, all still inlined into self-contained single files by
-`vite-plugin-singlefile` (`useRecommendedBuildConfig: false`, so Rollup does
-not force `inlineDynamicImports`, which is incompatible with multiple inputs):
-
-```
-index.html   → internal app (unchanged behavior, /)
-landing.html → public marketing page (/landing.html)
-             src/landing/main.tsx → page, styles.css → design system
-             src/landing/content.ts → ALL copy + {{placeholders}}
-             src/landing/assets/ → AI-generated imagery (inlined as base64)
-404.html     → branded not-found page for static hosts
-```
-
-Rules for `landing.html`:
-
-* It is a standalone React entry — it does not share the app's root, store, or
-  Supabase connection, so public visitors never touch the internal system.
-* `src/landing/content.ts` is the single source of truth for copy. Every
-  `{{placeholder}}` there must be replaced with real figures/names/quotes
-  before public use (the design skill forbids inventing facts about a real
-  company). WhatsApp number: `CONTENT.whatsappNumber`.
-* Style source of truth is the `landing-page-design` skill from
-  `elayadesign/ai-design-skills`: Tailwind type scale only, Cairo as the single
-  Arabic typeface (the skill's Geist/Manrope rule is waived here — they have no
-  Arabic glyphs), flat backgrounds from `#131209/#181818/#1F1F1F/#272727/#313131`,
-  no gradients except the hero headline, named text styles from `styles.css`.
-
-Verification after changing Vite inputs: `npm run build` must still emit a
-working `dist/index.html` (internal app first) alongside `dist/landing.html`.
